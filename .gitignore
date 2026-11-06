@@ -1,0 +1,20 @@
+# 忽略编译生成的构建目录
+build/
+bin/
+out/
+
+# 忽略编译产生的中间文件
+*.o
+*.obj
+
+# 忽略日志文件
+logs/
+*.log
+
+# 忽略IDE的配置文件 (比如 VSCode 的 .vscode 文件夹)
+.vscode/
+.idea/
+error_code
+
+# 忽略系统文件
+.DS_Store
