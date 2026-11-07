@@ -66,6 +66,8 @@ bool EpollServer::start() {
 	ev.data.fd = server_fd_;
 	epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, server_fd_, &ev);
 
+	thread_pool_ = make_unique<ThreadPool>(4);
+
 	cout << "Epoll Server started on port " << port_ << endl;
 	return true;
 }
@@ -188,92 +190,98 @@ void EpollServer::handleClientData(int client_fd) {
 		rb.erase(0, sizeof(MessageHeader) + header.length);
 
 		if (header.type == MSG_REGISTER || header.type == MSG_LOGIN) {
-			try {
-				// 1. 解析 JSON
-				json j = json::parse(body);
-				string uname = j["username"];
-				string pwd = j["password"];
+			// 按值捕获client_fd和body 防止垂悬引用
+			int fd_copy = client_fd;
+			string body_copy = body;
+			MsgType type_copy = (MsgType)header.type;
 
-				// 2. 获取数据库连接（RAII机制，离开作用域自动归还）
-				MYSQL *conn = nullptr;
-				MysqlConnRAII raii(&conn);
+			thread_pool_->enqueue([this, fd_copy, body_copy, type_copy]() {
+				try {
+					// 1. 解析 JSON
+					json j = json::parse(body_copy);
+					string uname = j["username"];
+					string pwd = j["password"];
 
-				if (!conn) {
-					json res;
-					res["message"] = "数据库系统繁忙 请稍后再试！！！";
-					sendToClient(client_fd, MSG_SYSTEM, res.dump());
-					continue;
-				}
+					// 2. 获取数据库连接（RAII机制，离开作用域自动归还）
+					MYSQL *conn = nullptr;
+					MysqlConnRAII raii(&conn);
 
-				// 3. 防 SQL 注入转义（提取到公共部分）
-				char escape_uname[256] = {0};
-				char escape_pwd[256] = {0};
-
-				mysql_real_escape_string(conn, escape_uname, uname.c_str(), uname.length());
-				mysql_real_escape_string(conn, escape_pwd, pwd.c_str(), pwd.length());
-
-				if (header.type == MSG_REGISTER) {
-					string sql = "INSERT INTO users (username,password) VALUES ('" + string(escape_uname) + "','" +
-								 string(escape_pwd) + "')";
-					if (mysql_query(conn, sql.c_str()) == 0) {
+					if (!conn) {
 						json res;
-						res["message"] = "注册成功 请登录";
-						sendToClient(client_fd, MSG_SYSTEM, res.dump());
-					} else {
-						if (mysql_errno(conn) == 1062) {
-							json res;
-							res["message"] = "注册失败，用户名已存在";
-							sendToClient(client_fd, MSG_SYSTEM, res.dump());
-						} else {
-							json res;
-							res["message"] = "注册失败，服务器内部错误";
-							sendToClient(client_fd, MSG_SYSTEM, res.dump());
-						}
+						res["message"] = "数据库系统繁忙 请稍后再试！！！";
+						sendToClient(fd_copy, MSG_SYSTEM, res.dump());
+						return;
 					}
-				} else if (header.type == MSG_LOGIN) {
-					string sql = "SELECT id FROM users WHERE username='" + string(escape_uname) + "' AND password='" +
-								 string(escape_pwd) + "'";
-					if (mysql_query(conn, sql.c_str()) == 0) {
-						MYSQL_RES *result = mysql_store_result(conn);
-						if (result) {
-							if (mysql_num_rows(result) > 0) {
-								{
-									// 修改多线程共享状态
-									lock_guard<mutex> lock(mtx_);
-									auto it = clients_.find(client_fd);
-									if (it != clients_.end()) {
-										clients_[client_fd].is_logged_in = true;
-										clients_[client_fd].username = uname;
-									}
-								}
+
+					// 3. 防 SQL 注入转义（提取到公共部分）
+					char escape_uname[256] = {0};
+					char escape_pwd[256] = {0};
+
+					mysql_real_escape_string(conn, escape_uname, uname.c_str(), uname.length());
+					mysql_real_escape_string(conn, escape_pwd, pwd.c_str(), pwd.length());
+
+					if (type_copy == MSG_REGISTER) {
+						string sql = "INSERT INTO users (username,password) VALUES ('" + string(escape_uname) + "','" +
+									 string(escape_pwd) + "')";
+						if (mysql_query(conn, sql.c_str()) == 0) {
+							json res;
+							res["message"] = "注册成功 请登录";
+							sendToClient(fd_copy, MSG_SYSTEM, res.dump());
+						} else {
+							if (mysql_errno(conn) == 1062) {
 								json res;
-								res["message"] = "登录成功，欢迎 " + uname;
-								sendToClient(client_fd, MSG_SYSTEM, res.dump());
+								res["message"] = "注册失败，用户名已存在";
+								sendToClient(fd_copy, MSG_SYSTEM, res.dump());
 							} else {
 								json res;
-								res["message"] = "登录失败，账号或密码错误";
-								sendToClient(client_fd, MSG_SYSTEM, res.dump());
+								res["message"] = "注册失败，服务器内部错误";
+								sendToClient(fd_copy, MSG_SYSTEM, res.dump());
 							}
-							mysql_free_result(result);
+						}
+					} else if (type_copy == MSG_LOGIN) {
+						string sql = "SELECT id FROM users WHERE username='" + string(escape_uname) +
+									 "' AND password='" + string(escape_pwd) + "'";
+						if (mysql_query(conn, sql.c_str()) == 0) {
+							MYSQL_RES *result = mysql_store_result(conn);
+							if (result) {
+								if (mysql_num_rows(result) > 0) {
+									{
+										// 修改多线程共享状态
+										lock_guard<mutex> lock(mtx_);
+										auto it = clients_.find(fd_copy);
+										if (it != clients_.end()) {
+											it->second.is_logged_in = true;
+											it->second.username = uname;
+										}
+									}
+									json res;
+									res["message"] = "登录成功，欢迎 " + uname;
+									sendToClient(fd_copy, MSG_SYSTEM, res.dump());
+								} else {
+									json res;
+									res["message"] = "登录失败，账号或密码错误";
+									sendToClient(fd_copy, MSG_SYSTEM, res.dump());
+								}
+								mysql_free_result(result);
+							} else {
+								json res;
+								res["message"] = "登录失败，获取数据异常";
+								sendToClient(fd_copy, MSG_SYSTEM, res.dump());
+								return;
+							}
 						} else {
 							json res;
-							res["message"] = "登录失败，获取数据异常";
-							sendToClient(client_fd, MSG_SYSTEM, res.dump());
-							continue;
+							res["message"] = "登录失败，数据库查询错误";
+							sendToClient(fd_copy, MSG_SYSTEM, res.dump());
+							return;
 						}
-					} else {
-						json res;
-						res["message"] = "登录失败，数据库查询错误";
-						sendToClient(client_fd, MSG_SYSTEM, res.dump());
-						continue;
 					}
+				} catch (const exception &e) {
+					json res;
+					res["message"] = "数据格式错误";
+					sendToClient(fd_copy, MSG_SYSTEM, res.dump());
 				}
-			} catch (const exception &e) {
-				json res;
-				res["message"] = "数据格式错误";
-				sendToClient(client_fd, MSG_SYSTEM, res.dump());
-				break;
-			}
+			});
 		} else if (header.type == MSG_CHAT) {
 			bool is_logged_in = false;
 			string username = "";
@@ -428,6 +436,3 @@ void EpollServer::handleWrite(int client_fd) {
 		epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, client_fd, &ev);
 	}
 }
-
-void handle_Register(int client_fd, const string &body, const MYSQL *&conn, const string &escape_uname,
-					 const string &escape_pwd) {}

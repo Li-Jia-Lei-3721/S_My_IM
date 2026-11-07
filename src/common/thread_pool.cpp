@@ -14,6 +14,7 @@ ThreadPool::ThreadPool(size_t threads) : stop_(false) {
 					task = std::move(this->tasks_.front());
 					this->tasks_.pop();
 				}
+				task();
 			}
 		});
 	}

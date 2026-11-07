@@ -7,6 +7,7 @@
 using namespace std;
 #include "../protocol/message.h"
 // #include <map>
+#include "../common/thread_pool.h"
 #include <unordered_map>
 
 struct ClientContext {
@@ -38,7 +39,9 @@ class EpollServer {
 	int epoll_fd_;
 
 	unordered_map<int, ClientContext> clients_;
-	mutex mtx_; // 保留以防后续扩展
+	mutex mtx_;
+
+	unique_ptr<ThreadPool> thread_pool_;
 
 	// map<string, string> user_db_;
 

@@ -13,14 +13,17 @@ add_executable(im_server
 				src/network/tcp_server.cpp
 				src/network/epoll_server.cpp
 				src/db/mysql_pool.cpp
+				src/common/thread_pool.cpp
 )
 
 link_directories(/usr/lib64/mysql)
+
 target_link_libraries(im_server 
-    /usr/lib64/mysql/libmysqlclient.so 
+	/usr/lib64/mysql/libmysqlclient.so 
     pthread
 )
 
+target_link_libraries(im_server mysqlclient pthread)
 
 # 生成客户端程序
 add_executable(im_client 
