@@ -16,9 +16,13 @@ add_executable(im_server
 )
 
 link_directories(/usr/lib64/mysql)
-target_link_libraries(im_server mysqlclient pthread)
+target_link_libraries(im_server 
+    /usr/lib64/mysql/libmysqlclient.so 
+    pthread
+)
+
 
 # 生成客户端程序
-add_executable(im_client
-				client/main.cpp)
+add_executable(im_client 
+    			client/main.cpp)
 
