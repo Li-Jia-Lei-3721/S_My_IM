@@ -10,7 +10,6 @@
 #include <cerrno>
 using json = nlohmann::json;
 #include "../db/mysql_pool.h"
-#include <iostream>
 
 EpollServer::EpollServer(int port) : port_(port), server_fd_(-1), epoll_fd_(-1) {}
 
