@@ -22,7 +22,7 @@ ThreadPool::ThreadPool(size_t threads) : stop_(false) {
 
 ThreadPool::~ThreadPool() {
 	{
-		unique_lock<mutex> lock(mtx_);
+		lock_guard<mutex> lock(mtx_);
 		stop_ = true;
 	}
 	cv_.notify_all();
@@ -34,7 +34,7 @@ ThreadPool::~ThreadPool() {
 
 void ThreadPool::enqueue(function<void()> task) {
 	{
-		unique_lock<mutex> lock(mtx_);
+		lock_guard<mutex> lock(mtx_);
 		tasks_.emplace(std::move(task));
 	}
 	cv_.notify_one();
