@@ -1,4 +1,5 @@
 #include "thread_pool.h"
+#include <utility>
 
 ThreadPool::ThreadPool(size_t threads) : stop_(false) {
 	for (size_t i = 0; i < threads; i++) {
@@ -10,7 +11,7 @@ ThreadPool::ThreadPool(size_t threads) : stop_(false) {
 					this->cv_.wait(lock, [this]() { return this->stop_ || !this->tasks_.empty(); });
 					if (this->stop_ && this->tasks_.empty())
 						return;
-					task = move(this->tasks_.front());
+					task = std::move(this->tasks_.front());
 					this->tasks_.pop();
 				}
 			}
@@ -33,7 +34,7 @@ ThreadPool::~ThreadPool() {
 void ThreadPool::enqueue(function<void()> task) {
 	{
 		unique_lock<mutex> lock(mtx_);
-		tasks_.emplace(move(task));
+		tasks_.emplace(std::move(task));
 	}
 	cv_.notify_one();
 }
