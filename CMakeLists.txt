@@ -23,8 +23,6 @@ target_link_libraries(im_server
     pthread
 )
 
-target_link_libraries(im_server mysqlclient pthread)
-
 # 生成客户端程序
 add_executable(im_client 
     			client/main.cpp)
