@@ -8,6 +8,8 @@ using namespace std;
 #include "../protocol/message.h"
 // #include <map>
 #include "../common/thread_pool.h"
+#include "../db/mysql_pool.h"
+#include "../db/redis_client.h"
 #include <iostream>
 #include <unordered_map>
 
@@ -34,6 +36,9 @@ class EpollServer {
 	void broadcastMessage(int sender_fd, const char *msg, int len);
 	void closeConnection(int client_fd);
 	void handleWrite(int client_fd);
+
+	void processAuthTask(int cliend_fd, const string &body, MsgType type);
+	void processChatTask(int client_fd, const string &body);
 
 	uint16_t port_;
 	int server_fd_;
