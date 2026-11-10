@@ -12,9 +12,9 @@ class RedisClient {
 	bool connect(const string &host, int port);
 	~RedisClient();
 
-	void setOnline(const string &username, int fd); // 用户上线
-	void setOffline(const string &username);		// 用户离线
-	int getOnlineFd(const string &username);		// 查询用户状态  在线？离线？
+	void setOnline(const string &username, int fd);	 // 用户上线
+	void setOffline(const string &username, int fd); // 用户离线
+	int getOnlineFd(const string &username);		 // 查询用户状态  在线？离线？
 
 	void pushOfflineMsg(const string &target, const string &msg);	   // 存离线消息
 	void popOfflineMsgs(const string &username, vector<string> &msgs); // 发送离线消息

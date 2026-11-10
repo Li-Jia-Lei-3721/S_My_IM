@@ -36,7 +36,7 @@ void EpollServer::closeConnection(int client_fd) {
 	}
 
 	if (!username.empty()) {
-		thread_pool_->enqueue([username]() { RedisClient::getInstance().setOffline(username); });
+		thread_pool_->enqueue([username, client_fd]() { RedisClient::getInstance().setOffline(username, client_fd); });
 	}
 }
 
@@ -543,7 +543,7 @@ void EpollServer::processChatTask(int client_fd, uint64_t conn_id, const string 
 				}
 				RedisClient::getInstance().pushOfflineMsg(target_name, out_body);
 
-				RedisClient::getInstance().setOffline(target_name);
+				RedisClient::getInstance().setOffline(target_name, target_fd);
 
 				json res;
 				res["message"] = "对方不在线 此消息为离线消息";
