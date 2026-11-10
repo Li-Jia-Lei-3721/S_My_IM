@@ -15,6 +15,7 @@ using namespace std;
 
 struct ClientContext {
 	int fd;
+	uint64_t conn_id = 0;
 	string recv_buffer;
 	string send_buffer;		   // 缓冲发送
 	bool is_logged_in = false; // 是否登录
@@ -37,12 +38,14 @@ class EpollServer {
 	void closeConnection(int client_fd);
 	void handleWrite(int client_fd);
 
-	void processAuthTask(int cliend_fd, const string &body, MsgType type);
-	void processChatTask(int client_fd, const string &body);
+	void processAuthTask(int cliend_fd, uint64_t conn_id, const string &body, MsgType type);
+	void processChatTask(int client_fd, uint64_t conn_id, const string &body);
 
 	uint16_t port_;
 	int server_fd_;
 	int epoll_fd_;
+
+	atomic<uint64_t> global_conn_id_{0};
 
 	unordered_map<int, ClientContext> clients_;
 	mutex mtx_;
@@ -51,5 +54,5 @@ class EpollServer {
 
 	// map<string, string> user_db_;
 
-	void sendToClient(int client_fd, MsgType type, const string &body);
+	bool sendToClient(int client_fd, uint64_t conn_id, MsgType type, const string &body);
 };
