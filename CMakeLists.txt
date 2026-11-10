@@ -16,17 +16,16 @@ add_executable(im_server
 				src/db/mysql_pool.cpp
 				src/db/redis_client.cpp 
 				src/common/thread_pool.cpp
+				src/common/password_util.cpp
 )
-
-link_directories(/usr/lib64/mysql)
 
 target_link_libraries(im_server 
 	/usr/lib64/mysql/libmysqlclient.so 
 	hiredis
     pthread
+	crypto			# OpenSSL加密库
+	ssl 			# OpenSSL 安全传输库
 )
-
-
 
 # 生成客户端程序
 add_executable(im_client 

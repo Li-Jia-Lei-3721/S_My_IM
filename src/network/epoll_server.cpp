@@ -9,6 +9,7 @@
 #include "../../third_party/json.hpp"
 #include <cerrno>
 using json = nlohmann::json;
+#include "../common/password_util.h"
 
 EpollServer::EpollServer(int port) : port_(port), server_fd_(-1), epoll_fd_(-1) {}
 
@@ -372,13 +373,20 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 		}
 
 		char escape_uname[256] = {0};
-		char escape_pwd[256] = {0};
+		// char escape_pwd[256] = {0};
 		mysql_real_escape_string(conn, escape_uname, uname.c_str(), uname.length());
-		mysql_real_escape_string(conn, escape_pwd, pwd.c_str(), pwd.length());
+		// mysql_real_escape_string(conn, escape_pwd, pwd.c_str(), pwd.length());
 
 		if (type == MSG_REGISTER) {
-			string sql = "INSERT INTO users (username,password) VALUES ('" + string(escape_uname) + "','" +
-						 string(escape_pwd) + "')";
+			// 1.生成盐
+			string salt = PasswordUtil::generateSalt();
+			// 2.计算哈希密文
+			string hashed_pwd = PasswordUtil::hashPassword(pwd, salt);
+
+			string sql = "INSERT INTO users (username,password,salt) VALUES ('" + string(escape_uname) + "','" +
+						 hashed_pwd + "','" + salt + "')";
+
+			// 用mysql的唯一索引防并发重名
 			if (mysql_query(conn, sql.c_str()) == 0) {
 
 				RedisClient::getInstance().addRegisteredUser(uname);
@@ -398,44 +406,73 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 				}
 			}
 		} else if (type == MSG_LOGIN) {
-			string sql = "SELECT id FROM users WHERE username='" + string(escape_uname) + "' AND password='" +
-						 string(escape_pwd) + "'";
+			string sql = "SELECT password,salt FROM users WHERE username='" + string(escape_uname) + "'";
 			if (mysql_query(conn, sql.c_str()) == 0) {
 				MYSQL_RES *result = mysql_store_result(conn);
 				if (result) {
 					if (mysql_num_rows(result) > 0) {
-						{
-							lock_guard<mutex> lock(mtx_);
-							auto it = clients_.find(client_fd);
-							if (it == clients_.end() || it->second.conn_id != conn_id) {
-								return;
-							}
-							it->second.is_logged_in = true;
-							it->second.username = uname;
-						}
+						MYSQL_ROW row = mysql_fetch_row(result);
+						string db_hashed_pwd = row[0];
+						string db_salt = row[1];
 
-						RedisClient::getInstance().setOnline(uname, client_fd);
-						json res;
-						res["message"] = "登录成功，欢迎 " + uname;
-						sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
+						string input_hashed = PasswordUtil::hashPassword(pwd, db_salt);
 
-						vector<string> offline_msgs;
-						RedisClient::getInstance().popOfflineMsgs(uname, offline_msgs);
-						if (!offline_msgs.empty()) {
-							json off_res;
-							off_res["message"] = "您有 " + to_string(offline_msgs.size()) + " 条离线消息";
-							sendToClient(client_fd, conn_id, MSG_SYSTEM, off_res.dump());
-							for (const auto &msg : offline_msgs) {
-								sendToClient(client_fd, conn_id, MSG_CHAT, msg);
+						if (input_hashed == db_hashed_pwd) {
+
+							{
+								lock_guard<mutex> lock(mtx_);
+								auto it = clients_.find(client_fd);
+								if (it == clients_.end() || it->second.conn_id != conn_id) {
+									mysql_free_result(result);
+									return;
+								}
+								it->second.is_logged_in = true;
+								it->second.username = uname;
 							}
+
+							RedisClient::getInstance().setOnline(uname, client_fd);
+							json res;
+							res["message"] = "登录成功，欢迎 " + uname;
+							sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
+
+							vector<string> offline_msgs;
+							RedisClient::getInstance().popOfflineMsgs(uname, offline_msgs);
+							if (!offline_msgs.empty()) {
+								json off_res;
+								off_res["message"] = "您有 " + to_string(offline_msgs.size()) + " 条离线消息";
+								sendToClient(client_fd, conn_id, MSG_SYSTEM, off_res.dump());
+								for (const auto &msg : offline_msgs) {
+									sendToClient(client_fd, conn_id, MSG_CHAT, msg);
+								}
+							}
+						} else {
+							json res;
+							res["message"] = "登录失败，账号或密码错误";
+							sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
+							mysql_free_result(result);
+							return;
 						}
 					} else {
 						json res;
 						res["message"] = "登录失败，账号或密码错误";
 						sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
+						mysql_free_result(result);
+						return;
 					}
 					mysql_free_result(result);
+				} else {
+					json res;
+					res["message"] = "服务器内部错误，获取数据失败";
+					sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
+					// 打印日志排查
+					cerr << "mysql_store_result error: " << mysql_error(conn) << endl;
+					return;
 				}
+			} else {
+				json res;
+				res["message"] = "数据库连接失败";
+				sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
+				return;
 			}
 		}
 	} catch (const exception &e) {
