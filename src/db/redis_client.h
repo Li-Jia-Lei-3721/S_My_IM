@@ -1,6 +1,8 @@
 #pragma once
+#include <condition_variable>
 #include <hiredis/hiredis.h>
 #include <mutex>
+#include <queue>
 #include <string>
 #include <vector>
 
@@ -9,7 +11,7 @@ using namespace std;
 class RedisClient {
   public:
 	static RedisClient &getInstance();
-	bool connect(const string &host, int port);
+	bool init(const string &host, int port, int poolSize = 10);
 	~RedisClient();
 
 	void setOnline(const string &username, int fd);	 // 用户上线
@@ -22,11 +24,31 @@ class RedisClient {
 	void addRegisteredUser(const string &username);
 	bool isRegistered(const string &username);
 
+	redisContext *getConnection();
+	void releaseConnection(redisContext *conn);
+
   private:
 	RedisClient() = default; // 单例模式
-	redisContext *context_ = nullptr;
-	mutex mtx_;
+	mutex pool_mtx_;
+	queue<redisContext *> pool_;
+
+	condition_variable cv_;
 
 	RedisClient(const RedisClient &) = delete;
 	RedisClient operator=(const RedisClient &) = delete;
+
+	int port_;
+	string host_;
+};
+
+class RedisConnRAII {
+  public:
+	RedisConnRAII(redisContext **conn);
+	~RedisConnRAII();
+
+	RedisConnRAII(const RedisConnRAII &) = delete;
+	RedisConnRAII &operator=(const RedisConnRAII &) = delete;
+
+  private:
+	redisContext *conn_;
 };

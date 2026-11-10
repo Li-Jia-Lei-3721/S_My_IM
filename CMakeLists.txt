@@ -12,7 +12,6 @@ include_directories(/usr/include/hiredis)
 # 生成服务端程序
 add_executable(im_server 
 				src/main.cpp
-				src/network/tcp_server.cpp
 				src/network/epoll_server.cpp
 				src/db/mysql_pool.cpp
 				src/db/redis_client.cpp 

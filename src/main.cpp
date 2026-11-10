@@ -8,7 +8,7 @@ int main() {
 
 	MysqlPool::getInstance().init("127.0.0.1", "root", "Root@123456", "im_db", 3306, 10);
 
-	RedisClient::getInstance().connect("127.0.0.1", 6379);
+	RedisClient::getInstance().init("127.0.0.1", 6379, 10);
 
 	EpollServer server(8080);
 	if (!server.start()) {
