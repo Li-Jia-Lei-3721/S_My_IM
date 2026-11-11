@@ -48,6 +48,8 @@ class EpollServer {
 	atomic<uint64_t> global_conn_id_{0};
 
 	unordered_map<int, ClientContext> clients_;
+	unordered_map<uint64_t, int> conn_id_to_fd_; // conn_id->fd映射表
+
 	mutex mtx_;
 
 	unique_ptr<ThreadPool> thread_pool_;

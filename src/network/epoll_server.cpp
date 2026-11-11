@@ -22,6 +22,7 @@ EpollServer::~EpollServer() {
 
 void EpollServer::closeConnection(int client_fd) {
 	string username = "";
+	uint64_t conn_id = 0;
 	{
 		// 加锁  防止多线程同时删除
 		lock_guard<mutex> lock(mtx_);
@@ -30,6 +31,11 @@ void EpollServer::closeConnection(int client_fd) {
 			if (it->second.is_logged_in) {
 				username = it->second.username;
 			}
+
+			// 清理映射
+			conn_id = it->second.conn_id;
+			conn_id_to_fd_.erase(conn_id);
+
 			epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_fd, nullptr);
 			close(client_fd);
 			clients_.erase(client_fd);
@@ -37,7 +43,7 @@ void EpollServer::closeConnection(int client_fd) {
 	}
 
 	if (!username.empty()) {
-		thread_pool_->enqueue([username, client_fd]() { RedisClient::getInstance().setOffline(username, client_fd); });
+		thread_pool_->enqueue([username, conn_id]() { RedisClient::getInstance().setOffline(username, conn_id); });
 	}
 }
 
@@ -135,6 +141,7 @@ void EpollServer::handleNewConnection() {
 		{
 			lock_guard<mutex> lock(mtx_);
 			clients_.emplace(client_fd, ClientContext{client_fd, new_id, "", ""});
+			conn_id_to_fd_[new_id] = client_fd;
 		}
 		struct epoll_event ev;
 		ev.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
@@ -430,7 +437,7 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 								it->second.username = uname;
 							}
 
-							RedisClient::getInstance().setOnline(uname, client_fd);
+							RedisClient::getInstance().setOnline(uname, conn_id);
 							json res;
 							res["message"] = "登录成功，欢迎 " + uname;
 							sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
@@ -555,43 +562,37 @@ void EpollServer::processChatTask(int client_fd, uint64_t conn_id, const string 
 				return;
 			}
 
-			int target_fd = RedisClient::getInstance().getOnlineFd(target_name);
+			uint64_t target_conn_id = RedisClient::getInstance().getOnlineConnId(target_name);
 
-			if (target_fd != -1) {
-				uint64_t target_conn_id = 0;
-				bool target_alive = false;
+			bool message_sent = false;
+
+			if (target_conn_id != 0) { // 0表示不在线
+				int target_fd = -1;
 				{
 					lock_guard<mutex> lock(mtx_);
-					auto it = clients_.find(target_fd);
-
-					// 确认是这个名字并且已经登录
-					if (it != clients_.end() && it->second.is_logged_in && it->second.username == target_name) {
-						target_conn_id = it->second.conn_id;
-						target_alive = true;
+					// 通过conn_id反查fd
+					auto map_it = conn_id_to_fd_.find(target_conn_id);
+					if (map_it != conn_id_to_fd_.end()) {
+						target_fd = map_it->second;
 					}
 				}
 
-				if (target_alive) {
-					bool success = sendToClient(target_fd, target_conn_id, MSG_CHAT, out_body);
-
-					if (success) {
-						return;
-					}
+				if (target_fd != -1) {
+					message_sent = sendToClient(target_fd, target_conn_id, MSG_CHAT, out_body);
 				}
+			}
+
+			if (message_sent) {
 				RedisClient::getInstance().pushOfflineMsg(target_name, out_body);
 
-				RedisClient::getInstance().setOffline(target_name, target_fd);
+				if (target_conn_id != 0) {
+					RedisClient::getInstance().setOffline(target_name, target_conn_id);
+				}
 
 				json res;
 				res["message"] = "对方不在线 此消息为离线消息";
 				sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
-
-				return;
 			}
-			RedisClient::getInstance().pushOfflineMsg(target_name, out_body);
-			json res;
-			res["message"] = "对方不在线 此消息为离线消息";
-			sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
 		} else {
 			// 群聊逻辑
 			MessageHeader out_header;

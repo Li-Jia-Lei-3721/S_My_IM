@@ -1,4 +1,5 @@
 #include "redis_client.h"
+#include <cinttypes>
 #include <cstring>
 #include <iostream>
 
@@ -54,16 +55,18 @@ void RedisClient::releaseConnection(redisContext *conn) {
 	cv_.notify_one();
 }
 
-void RedisClient::setOnline(const string &username, int fd) {
+void RedisClient::setOnline(const string &username, uint64_t conn_id) {
 	redisContext *conn;
 	RedisConnRAII raii(&conn);
 
-	redisReply *reply = (redisReply *)redisCommand(conn, "HSET online_users %s %d", username.c_str(), fd);
+	char buf[32];
+	snprintf(buf, sizeof(buf), PRIu64, conn_id);
+	redisReply *reply = (redisReply *)redisCommand(conn, "HSET online_users %s %s", username.c_str(), buf);
 	if (reply)
 		freeReplyObject(reply);
 }
 
-void RedisClient::setOffline(const string &username, int fd) {
+void RedisClient::setOffline(const string &username, uint64_t conn_id) {
 	redisContext *conn;
 	RedisConnRAII raii(&conn);
 
@@ -73,52 +76,33 @@ void RedisClient::setOffline(const string &username, int fd) {
 							 "  return 0 "
 							 "end";
 
-	string fd_str = to_string(fd);
+	char buf[32];
+	snprintf(buf, sizeof(buf), "%" PRIu64, conn_id);
 
 	// 使用 redisCommandArgv 安全传参
 	// EVAL script numkeys key1 arg1 arg2
-	const char *argv[5];
-	size_t argvlen[5];
+	const char *argv[6] = {"EVAL", lua_script, "1", "online_users", username.c_str(), buf};
 
-	argv[0] = "EVAL";
-	argvlen[0] = 4;
-	argv[1] = lua_script;
-	argvlen[1] = strlen(lua_script);
-	argv[2] = "1";
-	argvlen[2] = 1;
-	argv[3] = "online_users";
-	argvlen[3] = 12;
-	argv[4] = username.c_str();
-	argvlen[4] = username.length();
+	size_t argvlen[6] = {4, strlen(lua_script), 1, 12, username.length(), strlen(buf)};
 
-	// 把 fd_str拼进去
-	const char *argv_full[6];
-	size_t argvlen_full[6];
-	for (int i = 0; i < 5; i++) {
-		argv_full[i] = argv[i];
-		argvlen_full[i] = argvlen[i];
-	}
-	argv_full[5] = fd_str.c_str();
-	argvlen_full[5] = fd_str.length();
-
-	redisReply *reply = (redisReply *)redisCommandArgv(conn, 6, argv_full, argvlen_full);
+	redisReply *reply = (redisReply *)redisCommandArgv(conn, 6, argv, argvlen);
 
 	if (reply) {
 		freeReplyObject(reply);
 	}
 }
 
-int RedisClient::getOnlineFd(const string &username) {
+uint64_t RedisClient::getOnlineConnId(const string &username) {
 	redisContext *conn = nullptr;
 	RedisConnRAII raii(&conn);
 	redisReply *reply = (redisReply *)redisCommand(conn, "HGET online_users %s", username.c_str());
-	int fd = -1;
+	uint64_t conn_id = 0; // 0表示不在线
 	if (reply && reply->type == REDIS_REPLY_STRING) {
-		fd = stoi(reply->str);
+		conn_id = stoull(reply->str);
 	}
 	if (reply)
 		freeReplyObject(reply);
-	return fd;
+	return conn_id;
 }
 
 void RedisClient::pushOfflineMsg(const string &target, const string &msg) {
