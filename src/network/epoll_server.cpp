@@ -10,6 +10,7 @@
 #include <cerrno>
 using json = nlohmann::json;
 #include "../common/password_util.h"
+#include "../common/session_manager.h"
 #include "../db/mysql_pool.h"
 #include "../db/redis_client.h"
 #include <iostream>
@@ -24,29 +25,28 @@ EpollServer::~EpollServer() {
 }
 
 void EpollServer::closeConnection(int client_fd) {
-	string username = "";
 	uint64_t conn_id = 0;
 	{
 		// 加锁  防止多线程同时删除
 		lock_guard<mutex> lock(mtx_);
 		auto it = clients_.find(client_fd);
 		if (it != clients_.end()) {
-			if (it->second.is_logged_in) {
-				username = it->second.username;
-			}
-
-			// 清理映射
 			conn_id = it->second.conn_id;
-			conn_id_to_fd_.erase(conn_id);
-
 			epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_fd, nullptr);
 			close(client_fd);
 			clients_.erase(client_fd);
 		}
 	}
 
-	if (!username.empty()) {
-		thread_pool_->enqueue([username, conn_id]() { RedisClient::getInstance().setOffline(username, conn_id); });
+	if (conn_id != 0) {
+		string username = SessionManager::getInstance().getUsernameByConnId(conn_id);
+
+		if (!username.empty()) {
+			if (SessionManager::getInstance().logout(username, conn_id)) {
+				thread_pool_->enqueue(
+					[username, conn_id]() { RedisClient::getInstance().setOffline(username, conn_id); });
+			}
+		}
 	}
 }
 
@@ -144,8 +144,8 @@ void EpollServer::handleNewConnection() {
 		{
 			lock_guard<mutex> lock(mtx_);
 			clients_.emplace(client_fd, ClientContext{client_fd, new_id, "", ""});
-			conn_id_to_fd_[new_id] = client_fd;
 		}
+
 		struct epoll_event ev;
 		ev.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
 		ev.data.fd = client_fd;
@@ -417,72 +417,81 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 			}
 		} else if (type == MSG_LOGIN) {
 			string sql = "SELECT password,salt FROM users WHERE username='" + string(escape_uname) + "'";
-			if (mysql_query(conn, sql.c_str()) == 0) {
-				MYSQL_RES *result = mysql_store_result(conn);
-				if (result) {
-					if (mysql_num_rows(result) > 0) {
-						MYSQL_ROW row = mysql_fetch_row(result);
-						string db_hashed_pwd = row[0];
-						string db_salt = row[1];
 
-						string input_hashed = PasswordUtil::hashPassword(pwd, db_salt);
-
-						if (input_hashed == db_hashed_pwd) {
-
-							{
-								lock_guard<mutex> lock(mtx_);
-								auto it = clients_.find(client_fd);
-								if (it == clients_.end() || it->second.conn_id != conn_id) {
-									mysql_free_result(result);
-									return;
-								}
-								it->second.is_logged_in = true;
-								it->second.username = uname;
-							}
-
-							RedisClient::getInstance().setOnline(uname, conn_id);
-							json res;
-							res["message"] = "登录成功，欢迎 " + uname;
-							sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
-
-							vector<string> offline_msgs;
-							RedisClient::getInstance().popOfflineMsgs(uname, offline_msgs);
-							if (!offline_msgs.empty()) {
-								json off_res;
-								off_res["message"] = "您有 " + to_string(offline_msgs.size()) + " 条离线消息";
-								sendToClient(client_fd, conn_id, MSG_SYSTEM, off_res.dump());
-								for (const auto &msg : offline_msgs) {
-									sendToClient(client_fd, conn_id, MSG_CHAT, msg);
-								}
-							}
-						} else {
-							json res;
-							res["message"] = "登录失败，账号或密码错误";
-							sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
-							mysql_free_result(result);
-							return;
-						}
-					} else {
-						json res;
-						res["message"] = "登录失败，账号或密码错误";
-						sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
-						mysql_free_result(result);
-						return;
-					}
-					mysql_free_result(result);
-				} else {
-					json res;
-					res["message"] = "服务器内部错误，获取数据失败";
-					sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
-					// 打印日志排查
-					cerr << "mysql_store_result error: " << mysql_error(conn) << endl;
-					return;
-				}
-			} else {
+			if (mysql_query(conn, sql.c_str()) != 0) {
 				json res;
 				res["message"] = "数据库连接失败";
 				sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
+
 				return;
+			}
+
+			MYSQL_RES *result = mysql_store_result(conn);
+			if (result == nullptr) {
+				json res;
+				res["message"] = "服务器内部错误，获取数据失败";
+				sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
+
+				cerr << "mysql_store_result error: " << mysql_error(conn) << endl;
+				return;
+			}
+
+			if (mysql_num_rows(result) == 0) {
+				json res;
+				res["message"] = "登录失败，账号或密码错误";
+				sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
+				mysql_free_result(result);
+
+				return;
+			}
+
+			MYSQL_ROW row = mysql_fetch_row(result);
+			string db_hashed_pwd = row[0];
+			string db_salt = row[1];
+			string input_hashed = PasswordUtil::hashPassword(pwd, db_salt);
+
+			mysql_free_result(result); // 对比完立即释放结果集  防后续return导致内存泄漏
+
+			if (input_hashed != db_hashed_pwd) {
+				json res;
+				res["message"] = "登录失败，账号或密码错误";
+				sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
+				return;
+			}
+
+			uint64_t old_conn_id = SessionManager::getInstance().login(uname, conn_id, client_fd);
+
+			if (old_conn_id != 0) {
+				int old_fd = SessionManager::getInstance().getFdByConnId(old_conn_id);
+
+				if (old_fd != -1) {
+					json kick_res;
+					kick_res["message"] = "您的账号已在其他地方登录，您已被迫下线。";
+					sendToClient(old_fd, old_conn_id, MSG_SYSTEM, kick_res.dump());
+
+					// 关闭旧连接（此处会触发 closeConnection 里面的 logout 等清理逻辑）
+					closeConnection(old_fd);
+				}
+			}
+
+			// 更新 Redis 缓存里的在线状态为最新的 conn_id
+			RedisClient::getInstance().setOnline(uname, conn_id);
+			json res;
+			res["message"] = "登录成功，欢迎 " + uname;
+			sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
+
+			vector<string> offline_msgs;
+
+			RedisClient::getInstance().popOfflineMsgs(uname, offline_msgs);
+
+			if (!offline_msgs.empty()) {
+				json off_res;
+				off_res["message"] = "您有 " + to_string(offline_msgs.size()) + " 条离线消息";
+				sendToClient(client_fd, conn_id, MSG_SYSTEM, off_res.dump());
+
+				for (const auto &msg : offline_msgs) {
+					sendToClient(client_fd, conn_id, MSG_CHAT, msg);
+				}
 			}
 		}
 	} catch (const exception &e) {
@@ -493,27 +502,21 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 }
 
 void EpollServer::processChatTask(int client_fd, uint64_t conn_id, const string &body) {
-	bool is_logged_in = false;
-	string username = "";
-	{
-		lock_guard<mutex> lock(mtx_);
-		auto it = clients_.find(client_fd);
-		if (it != clients_.end() && it->second.conn_id == conn_id) {
-			is_logged_in = it->second.is_logged_in;
-			username = it->second.username;
-		}
-	}
+	string username = SessionManager::getInstance().getUsernameByConnId(conn_id);
 
-	if (!is_logged_in) {
+	if (username.empty()) {
+		// 如果查不到用户名，说明会话已失效
 		sendToClient(client_fd, conn_id, MSG_SYSTEM, "请先登录!");
 		return;
 	}
 
 	try {
+		// 接收json
 		json j = json::parse(body);
 		string input_msg = j["message"];
 		string target_name = j.contains("target") ? j["target"].get<string>() : "";
 
+		// 发送json
 		json out_json;
 		out_json["sender"] = username;
 		out_json["message"] = input_msg;
@@ -527,34 +530,43 @@ void EpollServer::processChatTask(int client_fd, uint64_t conn_id, const string 
 				return;
 			}
 
-			// 先查redis
 			bool is_registered = RedisClient::getInstance().isRegistered(target_name);
-			// 再查mysql
+
 			if (!is_registered) {
 				MYSQL *conn = nullptr;
 				MysqlConnRAII raii(&conn);
+
+				if (!conn) {
+					json res;
+					res["message"] = "数据库系统繁忙 请稍后!";
+					sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
+					return;
+				}
+
 				if (conn) {
 					char escape_target[256] = {0};
 					mysql_real_escape_string(conn, escape_target, target_name.c_str(), target_name.length());
 
 					string sql = "SELECT id FROM users WHERE username='" + string(escape_target) + "'";
+
 					if (mysql_query(conn, sql.c_str()) == 0) {
 						MYSQL_RES *result = mysql_store_result(conn);
-						if (result) {
-							if (mysql_num_rows(result) > 0) {
-								// 查到了
-								is_registered = true;
-								// 交给redis
-								RedisClient::getInstance().addRegisteredUser(target_name);
-							}
-							mysql_free_result(result);
+
+						if (!result) {
+							cerr << "获取结果集失败: " << mysql_error(conn) << endl;
+							json res;
+							res["message"] = "服务器内部错误";
+							sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
+							return;
 						}
+
+						if (mysql_num_rows(result) > 0) {
+							is_registered = true;
+							RedisClient::getInstance().addRegisteredUser(target_name); // 回写 Redis
+						}
+
+						mysql_free_result(result);
 					}
-				} else {
-					json res;
-					res["message"] = "数据库系统繁忙 请稍后!";
-					sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
-					return;
 				}
 			}
 
@@ -569,23 +581,16 @@ void EpollServer::processChatTask(int client_fd, uint64_t conn_id, const string 
 
 			bool message_sent = false;
 
-			if (target_conn_id != 0) { // 0表示不在线
-				int target_fd = -1;
-				{
-					lock_guard<mutex> lock(mtx_);
-					// 通过conn_id反查fd
-					auto map_it = conn_id_to_fd_.find(target_conn_id);
-					if (map_it != conn_id_to_fd_.end()) {
-						target_fd = map_it->second;
-					}
-				}
+			if (target_conn_id != 0) {
+				int target_fd = SessionManager::getInstance().getFdByConnId(target_fd);
 
 				if (target_fd != -1) {
 					message_sent = sendToClient(target_fd, target_conn_id, MSG_CHAT, out_body);
 				}
 			}
 
-			if (message_sent) {
+			// 没发出去均变为离线消息
+			if (!message_sent) {
 				RedisClient::getInstance().pushOfflineMsg(target_name, out_body);
 
 				if (target_conn_id != 0) {
@@ -596,8 +601,8 @@ void EpollServer::processChatTask(int client_fd, uint64_t conn_id, const string 
 				res["message"] = "对方不在线 此消息为离线消息";
 				sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
 			}
+
 		} else {
-			// 群聊逻辑
 			MessageHeader out_header;
 			out_header.magic = 0x12345678;
 			out_header.length = out_body.length();
@@ -606,6 +611,7 @@ void EpollServer::processChatTask(int client_fd, uint64_t conn_id, const string 
 
 			broadcastMessage(client_fd, out_packet.data(), out_packet.size());
 		}
+
 	} catch (const exception &e) {
 		sendToClient(client_fd, conn_id, MSG_SYSTEM, "数据格式错误");
 	}
