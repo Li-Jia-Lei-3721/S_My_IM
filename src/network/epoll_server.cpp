@@ -582,7 +582,7 @@ void EpollServer::processChatTask(int client_fd, uint64_t conn_id, const string 
 			bool message_sent = false;
 
 			if (target_conn_id != 0) {
-				int target_fd = SessionManager::getInstance().getFdByConnId(target_fd);
+				int target_fd = SessionManager::getInstance().getFdByConnId(target_conn_id);
 
 				if (target_fd != -1) {
 					message_sent = sendToClient(target_fd, target_conn_id, MSG_CHAT, out_body);
