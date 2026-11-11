@@ -17,6 +17,7 @@ add_executable(im_server
 				src/db/redis_client.cpp 
 				src/common/thread_pool.cpp
 				src/common/password_util.cpp
+				src/common/session_manager.cpp
 )
 
 target_link_libraries(im_server 
