@@ -2,29 +2,29 @@
 #include <iostream>
 #include <stdint.h>
 using namespace std;
+#include <algorithm>
+#include <mutex>
 #include <thread>
 #include <vector>
-#include <mutex>
-#include <algorithm>
 
 class TcpServer {
   public:
-    TcpServer(int port);
-    ~TcpServer();
+	TcpServer(int port);
+	~TcpServer();
 
-    bool start();
+	bool start();
 
 	void acceptLoop();
 
   private:
-    void handleClient(int client_fd);
+	void handleClient(int client_fd);
 
-    void broadcastMessage(int sender_fd,const char* msg,int len);
-    
-    uint16_t port_;
-    int server_fd_;
+	void broadcastMessage(int sender_fd, const char *msg, int len);
 
-    vector<int> client_fds_;
+	uint16_t port_;
+	int server_fd_;
 
-    mutex mtx_;
+	vector<int> client_fds_;
+
+	mutex mtx_;
 };

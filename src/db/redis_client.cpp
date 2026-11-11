@@ -1,5 +1,6 @@
 #include "redis_client.h"
 #include <cinttypes>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
 
@@ -60,7 +61,7 @@ void RedisClient::setOnline(const string &username, uint64_t conn_id) {
 	RedisConnRAII raii(&conn);
 
 	char buf[32];
-	snprintf(buf, sizeof(buf), PRIu64, conn_id);
+	snprintf(buf, sizeof(buf), "%" PRIu64, conn_id);
 	redisReply *reply = (redisReply *)redisCommand(conn, "HSET online_users %s %s", username.c_str(), buf);
 	if (reply)
 		freeReplyObject(reply);

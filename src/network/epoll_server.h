@@ -8,9 +8,6 @@ using namespace std;
 #include "../protocol/message.h"
 // #include <map>
 #include "../common/thread_pool.h"
-#include "../db/mysql_pool.h"
-#include "../db/redis_client.h"
-#include <iostream>
 #include <unordered_map>
 
 struct ClientContext {
