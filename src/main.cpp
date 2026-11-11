@@ -2,6 +2,7 @@
 #include "db/mysql_pool.h"
 #include "db/redis_client.h"
 #include "network/epoll_server.h"
+#include <iostream>
 
 int main() {
 	cout << "IM Server Starting..." << endl;
