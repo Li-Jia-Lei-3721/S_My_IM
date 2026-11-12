@@ -8,6 +8,8 @@ using namespace std;
 #include "../protocol/message.h"
 // #include <map>
 #include "../common/thread_pool.h"
+#include <functional>
+#include <sys/eventfd.h>
 #include <unordered_map>
 
 struct ClientContext {
@@ -54,4 +56,9 @@ class EpollServer {
 	// map<string, string> user_db_;
 
 	bool sendToClient(int client_fd, uint64_t conn_id, MsgType type, const string &body);
+
+	int event_fd_;
+	mutex task_mtx_;
+	queue<function<void()>> io_tasks_;
+	void postToIoThread(function<void()> task);
 };
