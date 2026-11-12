@@ -286,12 +286,26 @@ bool EpollServer::sendToClient(int client_fd, uint64_t conn_id, MsgType type, co
 	if (it == clients_.end() || it->second.conn_id != conn_id)
 		return false;
 
+	auto &ctx = it->second;
+
+	// 计算添加本条消息后的总积压大小
+	size_t current_size = ctx.send_buffer.size();
+	size_t add_size = sizeof(MessageHeader) + body.size();
+
+	// 设定 10MB 的高压线
+	if (current_size + add_size > 10 * 1024 * 1024) {
+		cerr << "[WARNING] Client " << client_fd << " send buffer overflow! Force closing." << endl;
+
+		// 直接踢掉这个不读数据的客户端，防止拖垮服务器
+		closeConnection(client_fd, conn_id);
+		return false;
+	}
+
 	MessageHeader header;
 	header.magic = 0x12345678;
 	header.length = body.size();
 	header.type = type;
 
-	auto &ctx = it->second;
 	ctx.send_buffer.append((char *)&header, sizeof(MessageHeader));
 	ctx.send_buffer.append(body);
 
@@ -500,22 +514,21 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 				return;
 			}
 
-			uint64_t old_conn_id = SessionManager::getInstance().login(uname, conn_id, client_fd);
+			// int old_fd = -1;
+			pair<int, uint64_t> old_session = SessionManager::getInstance().login(uname, conn_id, client_fd);
+			int old_fd = old_session.first;
+			uint64_t old_conn_id = old_session.second;
 
-			if (old_conn_id != 0) {
-				int old_fd = SessionManager::getInstance().getFdByConnId(old_conn_id);
+			if (old_fd != -1) {
+				json kick_res;
+				kick_res["message"] = "您的账号已在其他地方登录，您已被迫下线。";
+				string body = kick_res.dump();
+				postToIoThread([this, old_fd, old_conn_id, body]() {
+					sendToClient(old_fd, old_conn_id, MSG_SYSTEM, body);
 
-				if (old_fd != -1) {
-					json kick_res;
-					kick_res["message"] = "您的账号已在其他地方登录，您已被迫下线。";
-					string body = kick_res.dump();
-					postToIoThread([this, old_fd, old_conn_id, body]() {
-						sendToClient(old_fd, old_conn_id, MSG_SYSTEM, body);
-
-						// 关闭旧连接（此处会触发 closeConnection 里面的 logout 等清理逻辑）
-						closeConnection(old_fd, old_conn_id);
-					});
-				}
+					// 关闭旧连接（此处会触发 closeConnection 里面的 logout 等清理逻辑）
+					closeConnection(old_fd, old_conn_id);
+				});
 			}
 
 			// 更新 Redis 缓存里的在线状态为最新的 conn_id

@@ -11,7 +11,7 @@ class SessionManager {
 	static SessionManager &getInstance();
 
 	// 登录：如果用户在线  返回旧的conn_id
-	uint64_t login(const string &username, uint64_t conn_id, int fd);
+	pair<int, uint64_t> login(const string &username, uint64_t conn_id, int fd);
 
 	// 登出: 只有当conn_id匹配才删除  应对断线重连和fd复用
 	bool logout(const string &username, uint64_t conn_id);

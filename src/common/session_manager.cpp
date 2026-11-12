@@ -5,14 +5,21 @@ SessionManager &SessionManager::getInstance() {
 	return instence;
 }
 
-uint64_t SessionManager::login(const string &username, uint64_t conn_id, int fd) {
+pair<int, uint64_t> SessionManager::login(const string &username, uint64_t conn_id, int fd) {
 	lock_guard<mutex> lock(mtx_);
 	uint64_t old_conn_id = 0;
+	int old_fd = -1;
 
 	// 顶号
 	auto it = user_to_conn_.find(username);
 	if (it != user_to_conn_.end()) {
 		old_conn_id = it->second;
+
+		auto fd_it = conn_to_fd_.find(old_conn_id);
+		if (fd_it != conn_to_fd_.end()) {
+			old_fd = fd_it->second;
+		}
+
 		// 清理旧连接映射
 		conn_to_user_.erase(old_conn_id);
 		conn_to_fd_.erase(old_conn_id);
@@ -23,7 +30,7 @@ uint64_t SessionManager::login(const string &username, uint64_t conn_id, int fd)
 	conn_to_user_[conn_id] = username;
 	conn_to_fd_[conn_id] = fd;
 
-	return old_conn_id;
+	return {old_fd, old_conn_id};
 }
 
 bool SessionManager::logout(const string &username, uint64_t conn_id) {
