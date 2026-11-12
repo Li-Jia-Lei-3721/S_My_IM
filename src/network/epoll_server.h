@@ -34,7 +34,7 @@ class EpollServer {
 	void handleNewConnection();
 	void handleClientData(int client_fd);
 	void broadcastMessage(int sender_fd, const char *msg, int len);
-	void closeConnection(int client_fd);
+	void closeConnection(int client_fd, uint64_t conn_id);
 	void handleWrite(int client_fd);
 
 	void processAuthTask(int cliend_fd, uint64_t conn_id, const string &body, MsgType type);
@@ -49,7 +49,7 @@ class EpollServer {
 	unordered_map<int, ClientContext> clients_;
 	// unordered_map<uint64_t, int> conn_id_to_fd_; // conn_id->fd映射表
 
-	mutex mtx_;
+	// mutex mtx_;
 
 	unique_ptr<ThreadPool> thread_pool_;
 

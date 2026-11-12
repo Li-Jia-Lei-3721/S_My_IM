@@ -25,30 +25,24 @@ EpollServer::~EpollServer() {
 		close(epoll_fd_);
 }
 
-void EpollServer::closeConnection(int client_fd) {
-	uint64_t conn_id = 0;
-	{
-		// 加锁  防止多线程同时删除
-		lock_guard<mutex> lock(mtx_);
-		auto it = clients_.find(client_fd);
-		if (it != clients_.end()) {
-			conn_id = it->second.conn_id;
-			epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_fd, nullptr);
-			close(client_fd);
-			clients_.erase(client_fd);
+void EpollServer::closeConnection(int client_fd, uint64_t conn_id) {
+	auto it = clients_.find(client_fd);
+
+	// 连接不存在或者换人了  退出
+	if (it == clients_.end() || it->second.conn_id != conn_id) {
+		return;
+	}
+
+	string username = SessionManager::getInstance().getUsernameByConnId(conn_id);
+	if (!username.empty()) {
+		if (SessionManager::getInstance().logout(username, conn_id)) {
+			thread_pool_->enqueue([username, conn_id]() { RedisClient::getInstance().setOffline(username, conn_id); });
 		}
 	}
 
-	if (conn_id != 0) {
-		string username = SessionManager::getInstance().getUsernameByConnId(conn_id);
-
-		if (!username.empty()) {
-			if (SessionManager::getInstance().logout(username, conn_id)) {
-				thread_pool_->enqueue(
-					[username, conn_id]() { RedisClient::getInstance().setOffline(username, conn_id); });
-			}
-		}
-	}
+	epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_fd, nullptr);
+	close(client_fd);
+	clients_.erase(client_fd);
 }
 
 void EpollServer::setNonBlocking(int fd) {
@@ -142,7 +136,15 @@ void EpollServer::run() {
 
 			if (evs & EPOLLRDHUP || evs & EPOLLHUP || evs & EPOLLERR) {
 				cout << "Client " << current_fd << " half-close/error." << endl;
-				closeConnection(current_fd);
+
+				uint64_t cur_conn_id = 0;
+				auto it = clients_.find(current_fd);
+
+				if (it != clients_.end()) {
+					cur_conn_id = it->second.conn_id;
+				}
+
+				closeConnection(current_fd, cur_conn_id);
 				continue;
 			}
 
@@ -175,10 +177,7 @@ void EpollServer::handleNewConnection() {
 
 		uint64_t new_id = ++global_conn_id_;
 
-		{
-			lock_guard<mutex> lock(mtx_);
-			clients_.emplace(client_fd, ClientContext{client_fd, new_id, "", ""});
-		}
+		clients_.emplace(client_fd, ClientContext{client_fd, new_id, "", ""});
 
 		struct epoll_event ev;
 		ev.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
@@ -197,13 +196,19 @@ void EpollServer::handleClientData(int client_fd) {
 		int bytes_read = recv(client_fd, buffer, sizeof(buffer), 0);
 		if (bytes_read > 0) {
 			// cout << "Client " << client_fd << " say: " << buffer << endl;
-			lock_guard<mutex> lock(mtx_);
 			auto it = clients_.find(client_fd);
 			if (it != clients_.end())
 				it->second.recv_buffer.append(buffer, bytes_read);
 		} else if (bytes_read == 0) { // 客户端断开连接
-			// cout << "Client " << client_fd << " disconnected." << endl;
-			closeConnection(client_fd);
+									  // cout << "Client " << client_fd << " disconnected." << endl;
+			uint64_t cur_conn_id = 0;
+			auto it = clients_.find(client_fd);
+
+			if (it != clients_.end()) {
+				cur_conn_id = it->second.conn_id;
+			}
+
+			closeConnection(client_fd, cur_conn_id);
 			return;
 		} else {
 			if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -211,7 +216,13 @@ void EpollServer::handleClientData(int client_fd) {
 			} else if (errno == EINTR) { // 信号被中断
 				continue;
 			} else {
-				closeConnection(client_fd);
+				uint64_t cur_conn_id = 0;
+				auto it = clients_.find(client_fd);
+
+				if (it != clients_.end())
+					cur_conn_id = it->second.conn_id;
+
+				closeConnection(client_fd, cur_conn_id);
 				return;
 			}
 		}
@@ -222,51 +233,38 @@ void EpollServer::handleClientData(int client_fd) {
 		string body;
 		MessageHeader header;
 		bool is_invaild_packet = false;
+		uint64_t current_conn_id = 0;
 
-		{
-			lock_guard<mutex> lock(mtx_);
-			auto it = clients_.find(client_fd);
-			if (it == clients_.end())
-				return;
+		auto it = clients_.find(client_fd);
+		if (it == clients_.end())
+			return;
 
-			string &rb = it->second.recv_buffer;
+		current_conn_id = it->second.conn_id; // 提前获取 conn_id 备用
+		string &rb = it->second.recv_buffer;
 
-			if (rb.size() < sizeof(MessageHeader))
-				break;
+		if (rb.size() < sizeof(MessageHeader))
+			break;
 
-			memcpy(&header, rb.data(), sizeof(MessageHeader));
+		memcpy(&header, rb.data(), sizeof(MessageHeader));
 
-			if (header.magic != 0x12345678) {
-				// cerr << "Client " << client_fd << " sent invaild magic number! Disconnecting." << endl;
-				rb.clear();
-				is_invaild_packet = true;
-			} else if (header.length > 10 * 1024 * 1024) {
-				// cerr << "Client " << client_fd << " sent too large packet! Disconnecting." << endl;
-				rb.clear();
-				is_invaild_packet = true;
-			} else if (rb.size() < sizeof(MessageHeader) + header.length) {
-				break;
-			} else {
-				body = rb.substr(sizeof(MessageHeader), header.length);
-				rb.erase(0, sizeof(MessageHeader) + header.length);
-			}
+		if (header.magic != 0x12345678) {
+			// cerr << "Client " << client_fd << " sent invaild magic number! Disconnecting." << endl;
+			rb.clear();
+			is_invaild_packet = true;
+		} else if (header.length > 10 * 1024 * 1024) {
+			// cerr << "Client " << client_fd << " sent too large packet! Disconnecting." << endl;
+			rb.clear();
+			is_invaild_packet = true;
+		} else if (rb.size() < sizeof(MessageHeader) + header.length) {
+			break;
+		} else {
+			body = rb.substr(sizeof(MessageHeader), header.length);
+			rb.erase(0, sizeof(MessageHeader) + header.length);
 		}
 
 		if (is_invaild_packet) {
-			closeConnection(client_fd);
+			closeConnection(client_fd, current_conn_id);
 			return;
-		}
-
-		// 进入线程池前 获取当前conn_id
-		uint64_t current_conn_id = 0;
-		{
-			lock_guard<mutex> lock(mtx_);
-			auto it = clients_.find(client_fd);
-			if (it != clients_.end()) {
-				current_conn_id = it->second.conn_id;
-			} else {
-				return;
-			}
 		}
 
 		if (header.type == MSG_REGISTER || header.type == MSG_LOGIN) {
@@ -278,23 +276,14 @@ void EpollServer::handleClientData(int client_fd) {
 			thread_pool_->enqueue(
 				[this, client_fd, current_conn_id, body]() { processChatTask(client_fd, current_conn_id, body); });
 		}
-
-		{
-			lock_guard<mutex> lock(mtx_);
-			if (clients_.find(client_fd) == clients_.end())
-				return;
-		}
 	}
 }
 
 bool EpollServer::sendToClient(int client_fd, uint64_t conn_id, MsgType type, const string &body) {
-	lock_guard<mutex> lock(mtx_);
-
 	auto it = clients_.find(client_fd);
-	if (it == clients_.end())
-		return false;
 
-	if (it->second.conn_id != conn_id)
+	// 连接还在且没有被复用
+	if (it == clients_.end() || it->second.conn_id != conn_id)
 		return false;
 
 	MessageHeader header;
@@ -308,6 +297,7 @@ bool EpollServer::sendToClient(int client_fd, uint64_t conn_id, MsgType type, co
 
 	while (!ctx.send_buffer.empty()) {
 		int bytes_sent = send(client_fd, ctx.send_buffer.data(), ctx.send_buffer.size(), MSG_NOSIGNAL);
+
 		if (bytes_sent > 0) {
 			ctx.send_buffer.erase(0, bytes_sent);
 		} else if (bytes_sent == -1) {
@@ -315,9 +305,12 @@ bool EpollServer::sendToClient(int client_fd, uint64_t conn_id, MsgType type, co
 				struct epoll_event ev;
 				ev.events = EPOLLIN | EPOLLOUT | EPOLLET | EPOLLRDHUP;
 				ev.data.fd = client_fd;
+
 				epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, client_fd, &ev);
 				break;
 			} else {
+				closeConnection(client_fd, conn_id);
+
 				return false;
 			}
 		}
@@ -326,59 +319,57 @@ bool EpollServer::sendToClient(int client_fd, uint64_t conn_id, MsgType type, co
 }
 
 void EpollServer::broadcastMessage(int sender_fd, const char *msg, int len) { // 丢失数据版本
-	vector<int> dead_fds;													  // 存放抛弃的客户端
+	vector<pair<int, uint64_t>> dead_conns;									  // 存放抛弃的客户端
 
-	{
-		lock_guard<mutex> lock(mtx_);
-		for (auto &pair : clients_) {
-			int fd = pair.first;
-			if (fd == sender_fd)
-				continue;
+	for (auto &pair : clients_) {
+		int fd = pair.first;
+		if (fd == sender_fd)
+			continue;
 
-			auto &ctx = pair.second;
+		auto &ctx = pair.second;
 
-			// 积压太多直接删掉防止内存被撑爆
-			if (ctx.send_buffer.size() > 10 * 1024 * 1024) {
-				dead_fds.emplace_back(fd);
-				continue;
-			}
+		// 积压太多直接删掉防止内存被撑爆
+		if (ctx.send_buffer.size() > 10 * 1024 * 1024) {
+			dead_conns.emplace_back(fd, ctx.conn_id);
+			continue;
+		}
 
-			ctx.send_buffer.append(msg, len);
+		ctx.send_buffer.append(msg, len);
 
-			while (!ctx.send_buffer.empty()) {
-				int bytes_sent = send(fd, ctx.send_buffer.data(), ctx.send_buffer.size(), MSG_NOSIGNAL);
+		while (!ctx.send_buffer.empty()) {
+			int bytes_sent = send(fd, ctx.send_buffer.data(), ctx.send_buffer.size(), MSG_NOSIGNAL);
 
-				if (bytes_sent > 0) {
-					ctx.send_buffer.erase(0, bytes_sent);
-				} else if (bytes_sent == -1) {
-					if (errno == EAGAIN || errno == EWOULDBLOCK) {
-						struct epoll_event ev;
-						ev.events = EPOLLIN | EPOLLET | EPOLLOUT;
+			if (bytes_sent > 0) {
+				ctx.send_buffer.erase(0, bytes_sent);
+			} else if (bytes_sent == -1) {
+				if (errno == EAGAIN || errno == EWOULDBLOCK) {
+					struct epoll_event ev;
+					ev.events = EPOLLIN | EPOLLET | EPOLLOUT | EPOLLRDHUP;
 
-						ev.data.fd = fd;
-						epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
+					ev.data.fd = fd;
+					epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
 
-						break;
-					} else { // 其它错误 断开连接
-						dead_fds.emplace_back(fd);
-						break;
-					}
+					break;
+				} else { // 其它错误 断开连接
+					dead_conns.emplace_back(fd, ctx.conn_id);
+					break;
 				}
 			}
 		}
-	} // 锁释放
+	}
 
-	for (int dead_fd : dead_fds)
-		closeConnection(dead_fd);
+	for (auto &p : dead_conns)
+		closeConnection(p.first, p.second);
 }
 
 void EpollServer::handleWrite(int client_fd) {
-	lock_guard<mutex> lock(mtx_);
 	auto it = clients_.find(client_fd);
 	if (it == clients_.end())
 		return;
 
 	auto &ctx = it->second;
+	uint64_t conn_id = ctx.conn_id;
+
 	while (!ctx.send_buffer.empty()) {
 		int bytes_sent = send(client_fd, ctx.send_buffer.data(), ctx.send_buffer.size(), MSG_NOSIGNAL);
 		if (bytes_sent > 0)
@@ -387,6 +378,7 @@ void EpollServer::handleWrite(int client_fd) {
 			if (errno == EAGAIN || errno == EWOULDBLOCK)
 				return;
 			else {
+				closeConnection(client_fd, conn_id);
 				return;
 			}
 		}
@@ -521,16 +513,20 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 						sendToClient(old_fd, old_conn_id, MSG_SYSTEM, body);
 
 						// 关闭旧连接（此处会触发 closeConnection 里面的 logout 等清理逻辑）
-						closeConnection(old_fd);
+						closeConnection(old_fd, old_conn_id);
 					});
 				}
 			}
 
 			// 更新 Redis 缓存里的在线状态为最新的 conn_id
 			RedisClient::getInstance().setOnline(uname, conn_id);
+
 			json res;
 			res["message"] = "登录成功，欢迎 " + uname;
-			sendToClient(client_fd, conn_id, MSG_SYSTEM, res.dump());
+			string success_body = res.dump();
+			postToIoThread([this, client_fd, conn_id, success_body]() {
+				sendToClient(client_fd, conn_id, MSG_SYSTEM, success_body);
+			});
 
 			vector<string> offline_msgs;
 
@@ -539,14 +535,15 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 			if (!offline_msgs.empty()) {
 				json off_res;
 				off_res["message"] = "您有 " + to_string(offline_msgs.size()) + " 条离线消息";
-				string body = res.dump();
+				string body = off_res.dump();
 				postToIoThread(
 					[this, client_fd, conn_id, body]() { sendToClient(client_fd, conn_id, MSG_SYSTEM, body); });
 
 				for (const auto &msg : offline_msgs) {
-					string body = res.dump();
-					postToIoThread(
-						[this, client_fd, conn_id, body]() { sendToClient(client_fd, conn_id, MSG_SYSTEM, body); });
+					string msg_body = msg;
+					postToIoThread([this, client_fd, conn_id, msg_body]() {
+						sendToClient(client_fd, conn_id, MSG_CHAT, msg_body);
+					});
 				}
 			}
 		}
@@ -688,7 +685,10 @@ void EpollServer::processChatTask(int client_fd, uint64_t conn_id, const string 
 			out_header.type = MSG_CHAT;
 			string out_packet = string((char *)&out_header, sizeof(MessageHeader)) + out_body;
 
-			broadcastMessage(client_fd, out_packet.data(), out_packet.size());
+			int sender_fd_copy = client_fd;
+			postToIoThread([this, sender_fd_copy, out_packet]() {
+				broadcastMessage(sender_fd_copy, out_packet.data(), out_packet.size());
+			});
 		}
 
 	} catch (const exception &e) {
