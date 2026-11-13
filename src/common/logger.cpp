@@ -10,9 +10,10 @@ Logger &Logger::getInstance() {
 	return instance;
 }
 
-void Logger::init(const string &filename) {
+void Logger::init(const string &filename, LogLevel level) {
 	std::lock_guard<std::mutex> lock(mtx_);
-	file_stream_.open(filename, std::ios::app); // 追加模式
+	current_level_ = level;
+	file_stream_.open(filename, std::ios::app);
 	if (!file_stream_.is_open()) {
 		std::cerr << "Failed to open log file: " << filename << std::endl;
 		return;

@@ -1,4 +1,5 @@
 #include "mysql_pool.h"
+#include "../common/logger.h"
 #include <chrono>
 #include <iostream>
 #include <mutex>
@@ -13,7 +14,7 @@ void MysqlPool::init(const string &host, const string &user, const string &pwd, 
 	for (int i = 0; i < poolSize; i++) {
 		MYSQL *conn = mysql_init(nullptr);
 		if (!conn) {
-			cerr << "mysql_init_failed" << endl;
+			LOG_ERROR("mysql_init_failed");
 			continue;
 		}
 
@@ -21,23 +22,29 @@ void MysqlPool::init(const string &host, const string &user, const string &pwd, 
 		mysql_options(conn, MYSQL_OPT_CONNECT_TIMEOUT, &timeout);
 
 		if (!mysql_real_connect(conn, host.c_str(), user.c_str(), pwd.c_str(), db.c_str(), port, nullptr, 0)) {
-			cerr << "mysql_real_connect_error:" << mysql_error(conn) << endl;
+			LOG_ERROR("mysql_real_connect_error:%s", mysql_error(conn));
+			// cerr << "mysql_real_connect_error:" << mysql_error(conn) << endl;
+
 			mysql_close(conn);
 			continue;
 		}
 
 		if (mysql_set_character_set(conn, "utf8mb4") != 0) {
-			std::cerr << "Failed to set charset: " << mysql_error(conn) << std::endl;
+			// std::cerr << "Failed to set charset: " << mysql_error(conn) << std::endl;
+			LOG_ERROR("Failed to set charset: %s", mysql_error(conn));
+
 			mysql_close(conn);
 			continue;
 		}
 		pool_.push(conn);
 	}
-	cout << "MySQL Connection Pool Init Success! Size:" << pool_.size() << endl;
+	// cout << "MySQL Connection Pool Init Success! Size:" << pool_.size() << endl;
+	LOG_INFO("MySQL Connection Pool Init Success! Size: %zu", pool_.size());
 
 	if (pool_.empty()) {
 		// 全部连接MySQL失败 程序退出
-		cerr << "CRITICAL ERROR: No MySQL connections available!" << endl;
+		// cerr << "CRITICAL ERROR: No MySQL connections available!" << endl;
+		LOG_ERROR("CRITICAL ERROR: No MySQL connections available!");
 		exit(1);
 	}
 }
@@ -48,7 +55,8 @@ MYSQL *MysqlPool::getConnection() {
 	if (!cv_.wait_for(lock, chrono::seconds(3), [this]() {
 		return !pool_.empty();
 	})) {
-		cerr << "Get MySQL connection timeout!" << endl;
+		// cerr << "Get MySQL connection timeout!" << endl;
+		LOG_ERROR("Get MySQL connection timeout!");
 		return nullptr;
 	}
 

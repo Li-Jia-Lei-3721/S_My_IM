@@ -20,7 +20,7 @@ class Logger {
 	static Logger &getInstance();
 
 	// 初始化 指定写入的文件名
-	void init(const string &filename);
+	void init(const string &filename, LogLevel level = L_INFO);
 
 	// 暴露判断接口，供宏前置判断使用
 	bool shouldLog(LogLevel level) const {

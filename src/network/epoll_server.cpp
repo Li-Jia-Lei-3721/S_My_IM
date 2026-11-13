@@ -86,7 +86,7 @@ bool EpollServer::start() {
 	// event_fd  用于工作线程唤醒主线程
 	event_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
 	if (event_fd_ == -1) {
-		cerr << "eventfd create failed!" << endl;
+		LOG_ERROR("eventfd create failed!");
 		return false;
 	}
 
@@ -98,16 +98,12 @@ bool EpollServer::start() {
 
 	thread_pool_ = make_unique<ThreadPool>(10);
 
-	cout << "Epoll Server started on port " << port_ << endl;
+	LOG_INFO("Epoll Server started on port %d", port_);
 	return true;
 }
 
 void EpollServer::run() {
 	struct epoll_event events[1024]; // 存放就绪事件
-
-	// 设置超时时间为60秒(心跳包要求客户端每30s发送一次ping)
-	// 服务端判定用户60s不发消息为下线
-	const auto TIMEOUT_THRESHOLD = chrono::seconds(60);
 
 	while (true) {
 		int nfds = epoll_wait(epoll_fd_, events, 1024, 1000);
@@ -153,7 +149,8 @@ void EpollServer::run() {
 
 				if (it != clients_.end()) {
 					cur_conn_id = it->second.conn_id;
-					cout << "Client " << current_fd << " half-close/error." << endl;
+					LOG_INFO("Client %d half-close/error.", current_fd);
+					// cout << "Client " << current_fd << " half-close/error." << endl;
 					closeConnection(current_fd, cur_conn_id);
 				}
 
@@ -181,6 +178,8 @@ void EpollServer::run() {
 			// 当前fd对应的conn_id==节点注册时的conn_id  没换人  进行下一步校验
 			if (it != clients_.end() && it->second.conn_id == top.conn_id) {
 				// 判断有效时间是否别刷新过
+				// 设置超时时间为60秒(心跳包要求客户端每30s发送一次ping)
+				// 服务端判定用户60s不发消息为下线
 				if (now - it->second.last_active_time > chrono::seconds(60)) {
 					// 彻底凉透了
 					// cout << "[Heartbeat] Client " << top.fd << " timeout." << endl;
@@ -204,7 +203,9 @@ void EpollServer::handleNewConnection() {
 			if (errno == EAGAIN || errno == EWOULDBLOCK) // 连接拿光了
 				break;
 			else {
-				perror("accept error"); // 其他错误如文件描述符耗尽等
+
+				// perror("accept error"); // 其他错误如文件描述符耗尽等
+				LOG_ERROR("accept error: %s", strerror(errno));
 				break;
 			}
 		}
@@ -219,6 +220,9 @@ void EpollServer::handleNewConnection() {
 		ev.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
 		ev.data.fd = client_fd;
 		epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, client_fd, &ev);
+
+		// 刚连上的用户也要加入到定期器的小根堆
+		addTimer(client_fd, new_id);
 	}
 }
 
@@ -345,7 +349,8 @@ bool EpollServer::sendToClient(int client_fd, uint64_t conn_id, MsgType type, co
 
 	// 设定 10MB 的高压线
 	if (current_size + add_size > 10 * 1024 * 1024) {
-		cerr << "[WARNING] Client " << client_fd << " send buffer overflow! Force closing." << endl;
+		// cerr << "[WARNING] Client " << client_fd << " send buffer overflow! Force closing." << endl;
+		LOG_ERROR("[WARNING] Client %d send buffer overflow! Force closing.", client_fd);
 
 		// 直接踢掉这个不读数据的客户端，防止拖垮服务器
 		closeConnection(client_fd, conn_id);
@@ -548,7 +553,9 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 					sendToClient(client_fd, conn_id, MSG_SYSTEM, body);
 				});
 
-				cerr << "mysql_store_result error: " << mysql_error(conn) << endl;
+				// cerr << "mysql_store_result error: " << mysql_error(conn) << endl;
+				LOG_ERROR("mysql_store_result error: %s", mysql_error(conn));
+
 				return;
 			}
 
@@ -702,7 +709,9 @@ void EpollServer::processChatTask(int client_fd, uint64_t conn_id, const string 
 						MYSQL_RES *result = mysql_store_result(conn);
 
 						if (!result) {
-							cerr << "获取结果集失败: " << mysql_error(conn) << endl;
+							// cerr << "获取结果集失败: " << mysql_error(conn) << endl;
+							LOG_ERROR("获取结果集失败: %s", mysql_error(conn));
+
 							json res;
 							res["message"] = "服务器内部错误";
 							string body = res.dump();

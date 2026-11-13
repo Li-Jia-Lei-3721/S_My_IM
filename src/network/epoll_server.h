@@ -7,6 +7,7 @@
 using namespace std;
 #include "../protocol/message.h"
 // #include <map>
+#include "../common/logger.h"
 #include "../common/thread_pool.h"
 #include <chrono>
 #include <functional>
@@ -38,8 +39,7 @@ struct TimerNode {
 struct TimerCmp {
 	// 过期时间	 比较语义为Compare(a,b)=true 优先级a<b
 	// 及return a>b实现更早的过期时间b优先级更高
-	bool operator()(const TimerNode &a, const TimerNode &b)
-	{
+	bool operator()(const TimerNode &a, const TimerNode &b) {
 		return a.expire_time > b.expire_time;
 	}
 };

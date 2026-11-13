@@ -1,4 +1,5 @@
 #include "redis_client.h"
+#include "../common/logger.h"
 #include <cinttypes>
 #include <cstdint>
 #include <cstring>
@@ -26,7 +27,8 @@ bool RedisClient::init(const string &host, int port, int poolSize) {
 		pool_.push(ctx);
 	}
 
-	cout << "Redis Connection Pool Init Success! Size: " << pool_.size() << endl;
+	// cout << "Redis Connection Pool Init Success! Size: " << pool_.size() << endl;
+	LOG_INFO("Redis Connection Pool Init Success! Size: %zu", pool_.size());
 	return !pool_.empty();
 }
 
@@ -45,7 +47,8 @@ redisContext *RedisClient::getConnection() {
 	if (!cv_.wait_for(lock, chrono::seconds(3), [this]() {
 		return !pool_.empty();
 	})) {
-		cerr << "Get Redis connection timeout!" << endl;
+		LOG_INFO("Get Redis connection timeout!");
+		// cerr << "Get Redis connection timeout!" << endl;
 		return nullptr;
 	};
 	redisContext *ctx = pool_.front();
@@ -209,7 +212,8 @@ bool RedisClient::isRegistered(const string &username) {
 	RedisConnRAII raii(&conn);
 
 	if (!conn) {
-		cerr << "Redis conn is null in isRegistered" << endl;
+		// cerr << "Redis conn is null in isRegistered" << endl;
+		LOG_ERROR("Redis conn is null in isRegistered");
 		return false; // 默认当作未注册处理
 	}
 

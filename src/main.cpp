@@ -6,9 +6,9 @@
 #include <iostream>
 
 int main() {
-	cout << "IM Server Starting..." << endl;
 
-	Logger::getInstance().init("server.log");
+	// 初始化异步日志，日志将写入 server.log，最低级别为 INFO
+	Logger::getInstance().init("server.log", L_INFO);
 	LOG_INFO("IM Server Starting...");
 
 	MysqlPool::getInstance().init("127.0.0.1", "root", "Root@123456", "im_db", 3306, 10);
