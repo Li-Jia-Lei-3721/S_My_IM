@@ -4,5 +4,5 @@ TabWidth: 4
 UseTab: Always
 ColumnLimit: 120     
 AllowShortFunctionsOnASingleLine: Empty 
-BreakBeforeBraces: Attach  
+BreakBeforeBraces: Stroustrup
 PointerAlignment: Right  

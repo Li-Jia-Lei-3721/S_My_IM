@@ -1,5 +1,6 @@
 #include "epoll_server.h"
 #include <arpa/inet.h>
+#include <chrono>
 #include <cstring>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -18,14 +19,16 @@ using json = nlohmann::json;
 
 EpollServer::EpollServer(int port) : port_(port), server_fd_(-1), epoll_fd_(-1) {}
 
-EpollServer::~EpollServer() {
+EpollServer::~EpollServer()
+{
 	if (server_fd_ != -1)
 		close(server_fd_);
 	if (epoll_fd_ != -1)
 		close(epoll_fd_);
 }
 
-void EpollServer::closeConnection(int client_fd, uint64_t conn_id) {
+void EpollServer::closeConnection(int client_fd, uint64_t conn_id)
+{
 	auto it = clients_.find(client_fd);
 
 	// 连接不存在或者换人了  退出
@@ -45,12 +48,14 @@ void EpollServer::closeConnection(int client_fd, uint64_t conn_id) {
 	clients_.erase(client_fd);
 }
 
-void EpollServer::setNonBlocking(int fd) {
+void EpollServer::setNonBlocking(int fd)
+{
 	int flags = fcntl(fd, F_GETFL, 0);
 	fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-bool EpollServer::start() {
+bool EpollServer::start()
+{
 	server_fd_ = socket(AF_INET, SOCK_STREAM, 0);
 	int opt = 1;
 
@@ -97,11 +102,16 @@ bool EpollServer::start() {
 	return true;
 }
 
-void EpollServer::run() {
+void EpollServer::run()
+{
 	struct epoll_event events[1024]; // 存放就绪事件
 
+	// 设置超时时间为60秒(心跳包要求客户端每30s发送一次ping)
+	// 服务端判定用户60s不发消息为下线
+	const auto TIMEOUT_THRESHOLD = chrono::seconds(60);
+
 	while (true) {
-		int nfds = epoll_wait(epoll_fd_, events, 1024, -1);
+		int nfds = epoll_wait(epoll_fd_, events, 1024, 1000);
 		if (nfds == -1)
 			continue;
 
@@ -154,10 +164,38 @@ void EpollServer::run() {
 			if (evs & EPOLLOUT)
 				handleWrite(current_fd);
 		}
+
+		auto now = chrono::steady_clock::now();
+
+		// 堆顶有节点且过期 一直清理
+		while (!timer_heap_.empty()) {
+			TimerNode top = timer_heap_.top();
+
+			if (top.expire_time > now) {
+				break;
+			}
+
+			timer_heap_.pop();
+
+			// 惰性校验
+			auto it = clients_.find(top.fd);
+			// 当前fd对应的conn_id==节点注册时的conn_id  没换人  进行下一步校验
+			if (it != clients_.end() && it->second.conn_id == top.conn_id) {
+				// 判断有效时间是否别刷新过
+				if (now - it->second.last_active_time > chrono::seconds(60)) {
+					// 彻底凉透了
+					// cout << "[Heartbeat] Client " << top.fd << " timeout." << endl;
+					closeConnection(top.fd, top.conn_id);
+				}
+				// 被刷新过  及该时间节点后发过消息   不踢
+			}
+			// 换人了  不踢
+		}
 	}
 }
 
-void EpollServer::handleNewConnection() {
+void EpollServer::handleNewConnection()
+{
 	struct sockaddr_in client_addr;
 
 	while (true) {
@@ -177,7 +215,7 @@ void EpollServer::handleNewConnection() {
 
 		uint64_t new_id = ++global_conn_id_;
 
-		clients_.emplace(client_fd, ClientContext{client_fd, new_id, "", ""});
+		clients_.emplace(client_fd, ClientContext{client_fd, new_id, "", "", chrono::steady_clock::now()});
 
 		struct epoll_event ev;
 		ev.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
@@ -186,7 +224,8 @@ void EpollServer::handleNewConnection() {
 	}
 }
 
-void EpollServer::handleClientData(int client_fd) {
+void EpollServer::handleClientData(int client_fd)
+{
 	char buffer[1024];
 
 	while (true) {
@@ -194,13 +233,20 @@ void EpollServer::handleClientData(int client_fd) {
 
 		// 非阻塞模式下 没有数据revc会返回-1  并把errno设为EAGAIN
 		int bytes_read = recv(client_fd, buffer, sizeof(buffer), 0);
+
 		if (bytes_read > 0) {
 			// cout << "Client " << client_fd << " say: " << buffer << endl;
 			auto it = clients_.find(client_fd);
-			if (it != clients_.end())
+			if (it != clients_.end()) {
+				// 有数据  连接没死   刷新时间	用于方未校验
+				it->second.last_active_time = chrono::steady_clock::now();
+				// 往堆里塞时间节点
+				addTimer(client_fd, it->second.conn_id);
 				it->second.recv_buffer.append(buffer, bytes_read);
-		} else if (bytes_read == 0) { // 客户端断开连接
-									  // cout << "Client " << client_fd << " disconnected." << endl;
+			}
+		}
+		else if (bytes_read == 0) { // 客户端断开连接
+									// cout << "Client " << client_fd << " disconnected." << endl;
 			uint64_t cur_conn_id = 0;
 			auto it = clients_.find(client_fd);
 
@@ -210,12 +256,15 @@ void EpollServer::handleClientData(int client_fd) {
 
 			closeConnection(client_fd, cur_conn_id);
 			return;
-		} else {
+		}
+		else {
 			if (errno == EAGAIN || errno == EWOULDBLOCK) {
 				break;
-			} else if (errno == EINTR) { // 信号被中断
+			}
+			else if (errno == EINTR) { // 信号被中断
 				continue;
-			} else {
+			}
+			else {
 				uint64_t cur_conn_id = 0;
 				auto it = clients_.find(client_fd);
 
@@ -251,13 +300,16 @@ void EpollServer::handleClientData(int client_fd) {
 			// cerr << "Client " << client_fd << " sent invaild magic number! Disconnecting." << endl;
 			rb.clear();
 			is_invaild_packet = true;
-		} else if (header.length > 10 * 1024 * 1024) {
+		}
+		else if (header.length > 10 * 1024 * 1024) {
 			// cerr << "Client " << client_fd << " sent too large packet! Disconnecting." << endl;
 			rb.clear();
 			is_invaild_packet = true;
-		} else if (rb.size() < sizeof(MessageHeader) + header.length) {
+		}
+		else if (rb.size() < sizeof(MessageHeader) + header.length) {
 			break;
-		} else {
+		}
+		else {
 			body = rb.substr(sizeof(MessageHeader), header.length);
 			rb.erase(0, sizeof(MessageHeader) + header.length);
 		}
@@ -272,14 +324,16 @@ void EpollServer::handleClientData(int client_fd) {
 			thread_pool_->enqueue([this, client_fd, current_conn_id, body, type = (MsgType)header.type]() {
 				processAuthTask(client_fd, current_conn_id, body, type);
 			});
-		} else if (header.type == MSG_CHAT) {
+		}
+		else if (header.type == MSG_CHAT) {
 			thread_pool_->enqueue(
 				[this, client_fd, current_conn_id, body]() { processChatTask(client_fd, current_conn_id, body); });
 		}
 	}
 }
 
-bool EpollServer::sendToClient(int client_fd, uint64_t conn_id, MsgType type, const string &body) {
+bool EpollServer::sendToClient(int client_fd, uint64_t conn_id, MsgType type, const string &body)
+{
 	auto it = clients_.find(client_fd);
 
 	// 连接还在且没有被复用
@@ -314,7 +368,8 @@ bool EpollServer::sendToClient(int client_fd, uint64_t conn_id, MsgType type, co
 
 		if (bytes_sent > 0) {
 			ctx.send_buffer.erase(0, bytes_sent);
-		} else if (bytes_sent == -1) {
+		}
+		else if (bytes_sent == -1) {
 			if (errno == EAGAIN || errno == EWOULDBLOCK) {
 				struct epoll_event ev;
 				ev.events = EPOLLIN | EPOLLOUT | EPOLLET | EPOLLRDHUP;
@@ -322,7 +377,8 @@ bool EpollServer::sendToClient(int client_fd, uint64_t conn_id, MsgType type, co
 
 				epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, client_fd, &ev);
 				break;
-			} else {
+			}
+			else {
 				closeConnection(client_fd, conn_id);
 
 				return false;
@@ -332,8 +388,9 @@ bool EpollServer::sendToClient(int client_fd, uint64_t conn_id, MsgType type, co
 	return true;
 }
 
-void EpollServer::broadcastMessage(int sender_fd, const char *msg, int len) { // 丢失数据版本
-	vector<pair<int, uint64_t>> dead_conns;									  // 存放抛弃的客户端
+void EpollServer::broadcastMessage(int sender_fd, const char *msg, int len)
+{											// 丢失数据版本
+	vector<pair<int, uint64_t>> dead_conns; // 存放抛弃的客户端
 
 	for (auto &pair : clients_) {
 		int fd = pair.first;
@@ -355,7 +412,8 @@ void EpollServer::broadcastMessage(int sender_fd, const char *msg, int len) { //
 
 			if (bytes_sent > 0) {
 				ctx.send_buffer.erase(0, bytes_sent);
-			} else if (bytes_sent == -1) {
+			}
+			else if (bytes_sent == -1) {
 				if (errno == EAGAIN || errno == EWOULDBLOCK) {
 					struct epoll_event ev;
 					ev.events = EPOLLIN | EPOLLET | EPOLLOUT | EPOLLRDHUP;
@@ -364,7 +422,8 @@ void EpollServer::broadcastMessage(int sender_fd, const char *msg, int len) { //
 					epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
 
 					break;
-				} else { // 其它错误 断开连接
+				}
+				else { // 其它错误 断开连接
 					dead_conns.emplace_back(fd, ctx.conn_id);
 					break;
 				}
@@ -376,7 +435,8 @@ void EpollServer::broadcastMessage(int sender_fd, const char *msg, int len) { //
 		closeConnection(p.first, p.second);
 }
 
-void EpollServer::handleWrite(int client_fd) {
+void EpollServer::handleWrite(int client_fd)
+{
 	auto it = clients_.find(client_fd);
 	if (it == clients_.end())
 		return;
@@ -386,8 +446,9 @@ void EpollServer::handleWrite(int client_fd) {
 
 	while (!ctx.send_buffer.empty()) {
 		int bytes_sent = send(client_fd, ctx.send_buffer.data(), ctx.send_buffer.size(), MSG_NOSIGNAL);
-		if (bytes_sent > 0)
+		if (bytes_sent > 0) {
 			ctx.send_buffer.erase(0, bytes_sent);
+		}
 		else {
 			if (errno == EAGAIN || errno == EWOULDBLOCK)
 				return;
@@ -406,7 +467,8 @@ void EpollServer::handleWrite(int client_fd) {
 	}
 }
 
-void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string &body, MsgType type) {
+void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string &body, MsgType type)
+{
 	try {
 		json j = json::parse(body);
 		string uname = j["username"];
@@ -447,15 +509,16 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 				string body = res.dump();
 				postToIoThread(
 					[this, client_fd, conn_id, body]() { sendToClient(client_fd, conn_id, MSG_SYSTEM, body); });
-			} else {
+			}
+			else {
 				if (mysql_errno(conn) == 1062) {
 					json res;
 					res["message"] = "注册失败 用户名已存在";
 					string body = res.dump();
 					postToIoThread(
 						[this, client_fd, conn_id, body]() { sendToClient(client_fd, conn_id, MSG_SYSTEM, body); });
-
-				} else {
+				}
+				else {
 					json res;
 					res["message"] = "注册失败 服务器内部错误";
 					string body = res.dump();
@@ -463,7 +526,8 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 						[this, client_fd, conn_id, body]() { sendToClient(client_fd, conn_id, MSG_SYSTEM, body); });
 				}
 			}
-		} else if (type == MSG_LOGIN) {
+		}
+		else if (type == MSG_LOGIN) {
 			string sql = "SELECT password,salt FROM users WHERE username='" + string(escape_uname) + "'";
 
 			if (mysql_query(conn, sql.c_str()) != 0) {
@@ -560,7 +624,8 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 				}
 			}
 		}
-	} catch (const exception &e) {
+	}
+	catch (const exception &e) {
 		json res;
 		res["message"] = "数据格式错误";
 		string body = res.dump();
@@ -568,7 +633,8 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 	}
 }
 
-void EpollServer::processChatTask(int client_fd, uint64_t conn_id, const string &body) {
+void EpollServer::processChatTask(int client_fd, uint64_t conn_id, const string &body)
+{
 	string username = SessionManager::getInstance().getUsernameByConnId(conn_id);
 
 	if (username.empty()) {
@@ -690,8 +756,8 @@ void EpollServer::processChatTask(int client_fd, uint64_t conn_id, const string 
 			res["message"] = "对方不在线 此消息为离线消息";
 			string body = res.dump();
 			postToIoThread([this, client_fd, conn_id, body]() { sendToClient(client_fd, conn_id, MSG_SYSTEM, body); });
-
-		} else {
+		}
+		else {
 			MessageHeader out_header;
 			out_header.magic = 0x12345678;
 			out_header.length = out_body.length();
@@ -703,8 +769,8 @@ void EpollServer::processChatTask(int client_fd, uint64_t conn_id, const string 
 				broadcastMessage(sender_fd_copy, out_packet.data(), out_packet.size());
 			});
 		}
-
-	} catch (const exception &e) {
+	}
+	catch (const exception &e) {
 		json res;
 		res["message"] = "数据格式错误";
 		string body = res.dump();
@@ -712,7 +778,8 @@ void EpollServer::processChatTask(int client_fd, uint64_t conn_id, const string 
 	}
 }
 
-void EpollServer::postToIoThread(function<void()> task) {
+void EpollServer::postToIoThread(function<void()> task)
+{
 	{
 		lock_guard<mutex> lock(task_mtx_);
 		io_tasks_.push(std::move(task));
@@ -720,4 +787,11 @@ void EpollServer::postToIoThread(function<void()> task) {
 
 	uint64_t one = 1;
 	write(event_fd_, &one, sizeof(one));
+}
+
+void EpollServer::addTimer(int fd, uint64_t conn_id)
+{
+	// 设定超时时间为60s
+	auto expire = chrono::steady_clock::now() + chrono::seconds(60);
+	timer_heap_.push({expire, fd, conn_id});
 }
