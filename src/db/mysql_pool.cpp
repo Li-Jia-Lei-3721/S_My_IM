@@ -1,7 +1,8 @@
 #include "mysql_pool.h"
 #include "../common/logger.h"
 #include <chrono>
-#include <iostream>
+// #include <iostream>
+#include "../common/logger.h"
 #include <mutex>
 
 MysqlPool &MysqlPool::getInstance() {
