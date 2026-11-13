@@ -87,10 +87,23 @@ void Logger::log(LogLevel level, const char *file, int line, const char *format,
 
 	{
 		std::lock_guard<std::mutex> lock(mtx_);
-		buffer_[current_buffer_idx_].emplace_back(oss.str());
+
+		auto &current_buffer = buffers_[current_buffer_idx_];
+		current_buffer.emplace_back(oss.str());
 
 		// 积压达到一定数量 唤醒后台线程
-		if (buffer_[current_buffer_idx_].size() >= 1024) {
+		if (current_buffer.size() >= BUFFER_FLUSH_THRESHOLD) {
+			// 移动满buffer[0/1]到queue
+			ready_queue_.push(std::move(current_buffer));
+
+			// 重置buffer[0/1]
+			current_buffer.clear();
+			current_buffer.reserve(BUFFER_FLUSH_THRESHOLD);
+
+			// 切换索引（0 -> 1, 1 -> 0）
+			current_buffer_idx_ = 1 - current_buffer_idx_;
+
+			// 唤醒io线程
 			cv_.notify_one();
 		}
 	}
@@ -104,22 +117,20 @@ void Logger::writeThread() {
 			std::unique_lock<std::mutex> lock(mtx_);
 
 			cv_.wait_for(lock, chrono::seconds(1), [this]() {
-				return stop_ || !buffer_[current_buffer_idx_].empty();
+				return stop_ || !ready_queue_.empty();
 			});
 
-			if (stop_ && buffer_[current_buffer_idx_].empty()) {
+			if (stop_ && ready_queue_.empty()) {
 				break;
 			}
 
-			if (buffer_[current_buffer_idx_].empty()) {
+			if (ready_queue_.empty()) {
 				continue; // 超时醒来
 			}
 
 			// 将当前写满的buffer和后台空buffer交换
-			write_buffer.swap(buffer_[current_buffer_idx_]);
-
-			// 切换缓冲区索引
-			current_buffer_idx_ = 1 - current_buffer_idx_;
+			write_buffer = std::move(ready_queue_.front());
+			ready_queue_.pop();
 		}
 
 		// 在锁外面写磁盘

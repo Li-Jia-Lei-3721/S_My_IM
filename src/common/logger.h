@@ -2,6 +2,7 @@
 #include <condition_variable>
 #include <fstream>
 #include <mutex>
+#include <queue>
 #include <string>
 #include <thread>
 #include <vector>
@@ -40,8 +41,11 @@ class Logger {
 	ofstream file_stream_;
 
 	// 双缓冲
-	vector<string> buffer_[2];	 // 两个缓冲区
+	vector<string> buffers_[2];	 // 两个缓冲区
 	int current_buffer_idx_ = 0; // 写入的缓冲区索引
+
+	// 后台就绪队列
+	queue<vector<string>> ready_queue_;
 
 	mutex mtx_;
 	condition_variable cv_;
@@ -51,6 +55,9 @@ class Logger {
 	bool stop_ = false;
 
 	LogLevel current_level_ = L_INFO;
+
+	// 阈值，比如 1024 条或者积攒到一定大小就切换
+	const size_t BUFFER_FLUSH_THRESHOLD = 1024;
 };
 
 // 尝试宏定义
