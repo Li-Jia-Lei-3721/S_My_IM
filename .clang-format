@@ -3,6 +3,18 @@ IndentWidth: 4
 TabWidth: 4
 UseTab: Always
 ColumnLimit: 120     
+
 AllowShortFunctionsOnASingleLine: Empty 
-BreakBeforeBraces: Stroustrup
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: false
+  AfterControlStatement: false
+  BeforeElse: true
+  BeforeCatch: true
+
 PointerAlignment: Right  
+
+AllowShortEnumsOnASingleLine: false
+
+AllowShortLambdasOnASingleLine: None
+LambdaBodyIndentation: OuterScope

@@ -45,18 +45,22 @@ void receive_thread() {
 						string sender = j["sender"];
 						string msg = j["message"];
 						cout << "\n[" << sender << "]: " << msg << endl;
-					} else if (header.type == MSG_SYSTEM) {
+					}
+					else if (header.type == MSG_SYSTEM) {
 						cout << "\n[系统]: " << j["message"] << endl;
 					}
-				} catch (const exception &e) {
+				}
+				catch (const exception &e) {
 					cerr << "解析JSON失败：" << e.what() << endl;
 				}
 				cout << "> " << flush;
 			}
-		} else if (bytes_read == 0) {
+		}
+		else if (bytes_read == 0) {
 			cout << "服务器断开连接." << endl;
 			exit(0);
-		} else {
+		}
+		else {
 			cerr << "recv 发生错误 退出" << endl;
 			exit(1);
 		}
@@ -128,10 +132,12 @@ int main() {
 			if (space_pos != string::npos) {
 				chat_json["target"] = input.substr(1, space_pos - 1);
 				chat_json["message"] = input.substr(space_pos + 1);
-			} else {
+			}
+			else {
 				continue;
 			}
-		} else {
+		}
+		else {
 			chat_json["message"] = input;
 		}
 		chat_body = chat_json.dump();

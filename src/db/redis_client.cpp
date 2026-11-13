@@ -42,7 +42,9 @@ redisContext *RedisClient::getConnection() {
 	unique_lock<mutex> lock(pool_mtx_);
 
 	// 池子空了 等三秒  超时返回nullptr防止死等
-	if (!cv_.wait_for(lock, chrono::seconds(3), [this]() { return !pool_.empty(); })) {
+	if (!cv_.wait_for(lock, chrono::seconds(3), [this]() {
+		return !pool_.empty();
+	})) {
 		cerr << "Get Redis connection timeout!" << endl;
 		return nullptr;
 	};

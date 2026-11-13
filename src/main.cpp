@@ -1,4 +1,5 @@
 // #include "network/tcp_server.h"
+#include "common/logger.h"
 #include "db/mysql_pool.h"
 #include "db/redis_client.h"
 #include "network/epoll_server.h"
@@ -6,6 +7,9 @@
 
 int main() {
 	cout << "IM Server Starting..." << endl;
+
+	Logger::getInstance().init("server.log");
+	LOG_INFO("IM Server Starting...");
 
 	MysqlPool::getInstance().init("127.0.0.1", "root", "Root@123456", "im_db", 3306, 10);
 

@@ -45,7 +45,9 @@ void MysqlPool::init(const string &host, const string &user, const string &pwd, 
 MYSQL *MysqlPool::getConnection() {
 	unique_lock<mutex> lock(mtx_);
 
-	if (!cv_.wait_for(lock, chrono::seconds(3), [this]() { return !pool_.empty(); })) {
+	if (!cv_.wait_for(lock, chrono::seconds(3), [this]() {
+		return !pool_.empty();
+	})) {
 		cerr << "Get MySQL connection timeout!" << endl;
 		return nullptr;
 	}
