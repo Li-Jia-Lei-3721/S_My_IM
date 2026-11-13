@@ -2,9 +2,9 @@
 #include <condition_variable>
 #include <fstream>
 #include <mutex>
-#include <queue>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace std;
 
@@ -39,7 +39,10 @@ class Logger {
 
 	ofstream file_stream_;
 
-	queue<string> log_queue_;
+	// 双缓冲
+	vector<string> buffer_[2];	 // 两个缓冲区
+	int current_buffer_idx_ = 0; // 写入的缓冲区索引
+
 	mutex mtx_;
 	condition_variable cv_;
 

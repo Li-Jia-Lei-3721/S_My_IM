@@ -29,7 +29,11 @@ target_link_libraries(im_server
 	ssl 			# OpenSSL 安全传输库
 )
 
+add_definitions(-DPROJECT_ROOT="${CMAKE_SOURCE_DIR}")
+
 # 生成客户端程序
 add_executable(im_client 
     			client/main.cpp)
+
+
 
