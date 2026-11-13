@@ -36,6 +36,8 @@ void EpollServer::closeConnection(int client_fd, uint64_t conn_id)
 		return;
 	}
 
+	auto &ctx = it->second;
+
 	string username = SessionManager::getInstance().getUsernameByConnId(conn_id);
 	if (!username.empty()) {
 		if (SessionManager::getInstance().logout(username, conn_id)) {
@@ -144,22 +146,22 @@ void EpollServer::run()
 				continue;
 			}
 
+			if (evs & EPOLLIN || evs & EPOLLRDHUP)
+				handleClientData(current_fd);
+
 			if (evs & EPOLLRDHUP || evs & EPOLLHUP || evs & EPOLLERR) {
-				cout << "Client " << current_fd << " half-close/error." << endl;
 
 				uint64_t cur_conn_id = 0;
 				auto it = clients_.find(current_fd);
 
 				if (it != clients_.end()) {
 					cur_conn_id = it->second.conn_id;
+					cout << "Client " << current_fd << " half-close/error." << endl;
+					closeConnection(current_fd, cur_conn_id);
 				}
 
-				closeConnection(current_fd, cur_conn_id);
 				continue;
 			}
-
-			if (evs & EPOLLIN)
-				handleClientData(current_fd);
 
 			if (evs & EPOLLOUT)
 				handleWrite(current_fd);
