@@ -7,7 +7,6 @@
 using namespace std;
 #include "../protocol/message.h"
 // #include <map>
-#include "../common/logger.h"
 #include "../common/thread_pool.h"
 #include <chrono>
 #include <functional>

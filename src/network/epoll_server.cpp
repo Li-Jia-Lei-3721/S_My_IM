@@ -14,7 +14,8 @@ using json = nlohmann::json;
 #include "../common/session_manager.h"
 #include "../db/mysql_pool.h"
 #include "../db/redis_client.h"
-#include <iostream>
+// #include <iostream>
+#include "../common/logger.h"
 #include <utility>
 
 EpollServer::EpollServer(int port) : port_(port), server_fd_(-1), epoll_fd_(-1) {}
