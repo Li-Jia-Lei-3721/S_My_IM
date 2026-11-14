@@ -42,7 +42,10 @@ void Logger::log(LogLevel level, const char *file, int line, const char *format,
 	time_t now_time = chrono::system_clock::to_time_t(now);
 
 	// local非线程安全  多线程同时调用换成localtime_r
-	struct tm *tm_info = localtime(&now_time);
+	struct tm tm_buf;
+	localtime_r(&now_time, &tm_buf);
+
+	struct tm *tm_info = &tm_buf;
 	char time_str[32];
 	// strtime函数  把tm类型格式化为人可读字符串
 	strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);

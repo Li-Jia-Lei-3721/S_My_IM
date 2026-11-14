@@ -16,6 +16,7 @@ using json = nlohmann::json;
 #include "../db/redis_client.h"
 // #include <iostream>
 #include "../common/logger.h"
+#include "../common/validator.h"
 #include <utility>
 
 EpollServer::EpollServer(int port) : port_(port), server_fd_(-1), epoll_fd_(-1) {}
@@ -244,6 +245,7 @@ void EpollServer::handleClientData(int client_fd) {
 				it->second.last_active_time = chrono::steady_clock::now();
 				// 往堆里塞时间节点
 				addTimer(client_fd, it->second.conn_id);
+
 				it->second.recv_buffer.append(buffer, bytes_read);
 			}
 		}
@@ -297,6 +299,9 @@ void EpollServer::handleClientData(int client_fd) {
 			break;
 
 		memcpy(&header, rb.data(), sizeof(MessageHeader));
+
+		// 变为本机字节序
+		header.unpack();
 
 		if (header.magic != 0x12345678) {
 			// cerr << "Client " << client_fd << " sent invaild magic number! Disconnecting." << endl;
@@ -363,6 +368,8 @@ bool EpollServer::sendToClient(int client_fd, uint64_t conn_id, MsgType type, co
 	header.length = body.size();
 	header.type = type;
 
+	header.pack();
+
 	ctx.send_buffer.append((char *)&header, sizeof(MessageHeader));
 	ctx.send_buffer.append(body);
 
@@ -400,6 +407,10 @@ void EpollServer::broadcastMessage(int sender_fd, const char *msg, int len) { //
 			continue;
 
 		auto &ctx = pair.second;
+
+		if (SessionManager::getInstance().getUsernameByConnId(ctx.conn_id).empty()) {
+			continue;
+		}
 
 		// 积压太多直接删掉防止内存被撑爆
 		if (ctx.send_buffer.size() > 10 * 1024 * 1024) {
@@ -473,6 +484,15 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 		json j = json::parse(body);
 		string uname = j["username"];
 		string pwd = j["password"];
+
+		if (!Validator::isValidUsername(uname)) {
+			json res;
+			res["message"] = "用户名格式非法(仅3-20位字母数字或下划线 )";
+			string res_body = res.dump();
+			postToIoThread([this, client_fd, conn_id, res_body]() {
+				sendToClient(client_fd, conn_id, MSG_SYSTEM, res_body);
+			});
+		}
 
 		MYSQL *conn = nullptr;
 		MysqlConnRAII raii(&conn);
@@ -784,6 +804,10 @@ void EpollServer::processChatTask(int client_fd, uint64_t conn_id, const string 
 			out_header.magic = 0x12345678;
 			out_header.length = out_body.length();
 			out_header.type = MSG_CHAT;
+
+			// 包头字节序转换
+			out_header.pack();
+
 			string out_packet = string((char *)&out_header, sizeof(MessageHeader)) + out_body;
 
 			int sender_fd_copy = client_fd;

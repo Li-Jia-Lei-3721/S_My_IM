@@ -19,6 +19,7 @@ add_executable(im_server
 				src/common/password_util.cpp
 				src/common/session_manager.cpp
 				src/common/logger.cpp
+				src/common/validator.cpp
 )
 
 target_link_libraries(im_server 

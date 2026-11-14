@@ -9,6 +9,7 @@
 using namespace std;
 #include "../third_party/json.hpp"
 using json = nlohmann::json;
+#include "../src/protocol/message.h"
 
 int client_sock;
 
@@ -26,6 +27,9 @@ void receive_thread() {
 			while (recv_buffer.size() >= sizeof(MessageHeader)) {
 				MessageHeader header;
 				memcpy(&header, recv_buffer.data(), sizeof(MessageHeader));
+
+				// 转包头字节序
+				header.unpack();
 
 				if (header.magic != 0x12345678) {
 					cerr << "协议错误，强行断开" << endl;
@@ -108,6 +112,8 @@ int main() {
 	auth_header.length = auth_body.size();
 	auth_header.type = (choice == 1) ? MSG_REGISTER : MSG_LOGIN;
 
+	auth_header.pack();
+
 	string auth_packet;
 	auth_packet.append((char *)&auth_header, sizeof(MessageHeader));
 	auth_packet.append(auth_body);
@@ -145,6 +151,8 @@ int main() {
 		header.magic = 0x12345678;
 		header.length = chat_body.size();
 		header.type = MSG_CHAT;
+
+		header.pack();
 
 		string packet;
 		packet.append((char *)&header, sizeof(MessageHeader));
