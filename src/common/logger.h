@@ -61,6 +61,7 @@ class Logger {
 };
 
 // 尝试宏定义
+// do while语句防止if与外界else的胡乱搭配导致的逻辑错误
 #define LOG_BASE(level, format, ...)                                                                                   \
 	do {                                                                                                               \
 		if (Logger::getInstance().shouldLog(level)) {                                                                  \
@@ -69,6 +70,7 @@ class Logger {
 	} while (0)
 
 // 对外暴露的简单宏
+// ##吞掉可变参数前的','
 #define LOG_DEBUG(format, ...) LOG_BASE(L_DEBUG, format, ##__VA_ARGS__)
 #define LOG_INFO(format, ...) LOG_BASE(L_INFO, format, ##__VA_ARGS__)
 #define LOG_WARN(format, ...) LOG_BASE(L_WARN, format, ##__VA_ARGS__)
