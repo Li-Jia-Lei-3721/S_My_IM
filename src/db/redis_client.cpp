@@ -171,9 +171,12 @@ void RedisClient::popOfflineMsgs(const string &username, vector<string> &msgs) {
 		return;
 	}
 
-	// 使用 Lua 脚本将 LRANGE 和 DEL 原子化
+	// 使用 Lua 脚本将 LRANGE 和 LTRIM 原子化
 	const char *lua_script = "local msgs = redis.call('LRANGE', KEYS[1], 0, -1) "
-							 "redis.call('DEL', KEYS[1]) "
+							 "local len = #msgs "
+							 "if len > 0 then "
+							 "		redis.call('LTRIM',KEYS[1],len,-1) "
+							 "end "
 							 "return msgs";
 
 	string key = "offline_msg:" + username;

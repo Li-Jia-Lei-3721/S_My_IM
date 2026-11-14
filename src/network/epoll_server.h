@@ -44,6 +44,17 @@ struct TimerCmp {
 	}
 };
 
+// 有序集合定时器节点
+struct TimerNodeUp {
+	chrono::steady_clock::time_point expire_time;
+	int fd;
+	uint64_t conn_id;
+
+	bool operator<(const TimerNodeUp &other) const {
+		return expire_time < other.expire_time;
+	}
+};
+
 class EpollServer {
   public:
 	EpollServer(int port);

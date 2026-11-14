@@ -652,8 +652,14 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 
 				for (const auto &msg : offline_msgs) {
 					string msg_body = msg;
-					postToIoThread([this, client_fd, conn_id, msg_body]() {
-						sendToClient(client_fd, conn_id, MSG_CHAT, msg_body);
+					postToIoThread([this, client_fd, conn_id, msg_body, uname, msg]() {
+						bool success = sendToClient(client_fd, conn_id, MSG_CHAT, msg_body);
+
+						if (!success) {
+							thread_pool_->enqueue([uname, msg]() {
+								RedisClient::getInstance().pushOfflineMsg(uname, msg);
+							});
+						}
 					});
 				}
 			}
