@@ -8,6 +8,7 @@ using namespace std;
 #include "../protocol/message.h"
 // #include <map>
 #include "../common/thread_pool.h"
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <queue>
@@ -49,7 +50,7 @@ class EpollServer {
 	~EpollServer();
 
 	bool start();
-	void run();
+	void run(atomic<bool> &running);
 
   private:
 	void setNonBlocking(int fd);

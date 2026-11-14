@@ -104,10 +104,10 @@ bool EpollServer::start() {
 	return true;
 }
 
-void EpollServer::run() {
+void EpollServer::run(atomic<bool> &running) {
 	struct epoll_event events[1024]; // 存放就绪事件
 
-	while (true) {
+	while (running) {
 		int nfds = epoll_wait(epoll_fd_, events, 1024, 1000);
 		if (nfds == -1)
 			continue;
@@ -192,6 +192,8 @@ void EpollServer::run() {
 			// 换人了  不踢
 		}
 	}
+
+	LOG_INFO("EpollServer loop exited.");
 }
 
 void EpollServer::handleNewConnection() {

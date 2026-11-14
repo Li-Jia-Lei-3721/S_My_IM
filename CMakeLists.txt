@@ -20,6 +20,7 @@ add_executable(im_server
 				src/common/session_manager.cpp
 				src/common/logger.cpp
 				src/common/validator.cpp
+				src/common/config_manager.cpp 
 )
 
 target_link_libraries(im_server 
@@ -35,6 +36,13 @@ add_definitions(-DPROJECT_ROOT="${CMAKE_SOURCE_DIR}")
 # 生成客户端程序
 add_executable(im_client 
     			client/main.cpp)
+
+# 把配置文件复制到可执行文件所在目录
+configure_file(
+    ${PROJECT_SOURCE_DIR}/config.json
+    ${EXECUTABLE_OUTPUT_PATH}/config.json
+    COPYONLY
+)
 
 
 
