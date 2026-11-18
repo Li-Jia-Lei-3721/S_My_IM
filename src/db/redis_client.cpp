@@ -306,30 +306,33 @@ void RedisClient::del(const string &key) {
 bool RedisClient::isAllowedBySlidingWindow(const string &key, int windowSeconds, int maxRequests) {
 	redisContext *conn = nullptr;
 	RedisConnRAII raii(&conn);
+	if (!conn) {
+		LOG_ERROR("[SlidingWindow] get redis conn FAILED, key=%s", key.c_str());
+		return false;
+	}
 
-	if (!conn) return false;
-	const char *lua_script =
-		"local current_time = tonumber(ARGV[1]) " // 记录当前时间
-		"local window = tonumber(ARGV[2]) "		  // 窗口大小
-		"local max_req = tonumber(ARGV[3]) "	  // 最大请求数
-		"local unique_id = ARGV[4] "			  // 绝对唯一id
-		"-- 移除时间窗口之外的历史请求 "
-		"redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, current_time - window) " // 移除从0 到 以现在为基准窗口之前的数据
-		"local count = redis.call('ZCARD',KEYS[1]) "						 // 请求数量
-		"if count < max_req then "											 // 请求数量<最大数量允许请求
-		"	redis.call('ZADD',KEYS[1], current_time, current_time .. ':' .. unique_id) " // 发起请求插入集合
-		"	if count == 0 then "
-		"		redis.call('PEXPIRE', KEYS[1], window + 900000) "
-		"	end "
-		"	return 1 "
-		"else "
-		"	return 0 "
-		"end ";
+	// 脚本：返回一个数组 {是否允许, 当前count}，任何情况下都 return，绝不裸 nil
+	const char *lua_script = "local current_time = tonumber(ARGV[1]) "
+							 "local window = tonumber(ARGV[2]) "
+							 "local max_req = tonumber(ARGV[3]) "
+							 "local unique_id = ARGV[4] "
+							 "if current_time == nil or window == nil or max_req == nil then "
+							 "   return {-1, 'arg parse failed'} " // 👈 兜底，永不 nil
+							 "end "
+							 "redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, current_time - window) "
+							 "local count = redis.call('ZCARD', KEYS[1]) "
+							 "if count < max_req then "
+							 "   redis.call('ZADD', KEYS[1], current_time, current_time .. ':' .. unique_id) "
+							 "   if count == 0 then "
+							 "       redis.call('PEXPIRE', KEYS[1], window + 900000) "
+							 "   end "
+							 "   return {1, count} "
+							 "else "
+							 "   return {0, count} "
+							 "end ";
 
 	auto now = chrono::system_clock::now();
 	auto time_ms = chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch()).count();
-
-	// 获取唯一id
 	uint64_t req_id = ++global_req_id;
 
 	string time_str = to_string(time_ms);
@@ -337,32 +340,42 @@ bool RedisClient::isAllowedBySlidingWindow(const string &key, int windowSeconds,
 	string max_str = to_string(maxRequests);
 	string unique_id_str = to_string(req_id);
 
-	const char *argv[5] = {"EVAL", lua_script, "1", key.c_str(), time_str.c_str()};
-	size_t argvlen[5] = {4, strlen(lua_script), 1, key.length(), time_str.length()};
-
 	// clang-format off
-	const char *full_argv[8];				size_t full_argvlen[8];
-	for (int i = 0; i < 5; i++) {
-		full_argv[i] = argv[i];
-		full_argvlen[i] = argvlen[i];
-	}	
-	full_argv[5] = window_ms_str.c_str(); 	full_argvlen[5] = window_ms_str.length();
-    full_argv[6] = max_str.c_str(); 		full_argvlen[6] = max_str.length();
-    full_argv[7] = unique_id_str.c_str(); 	full_argvlen[7] = unique_id_str.length();
+	const char *argv[8];				size_t argvlen[8];
+	argv[0] = "EVAL";					argvlen[0] = 4;
+	argv[1] = lua_script;				argvlen[1] = strlen(lua_script);
+	argv[2] = "1";						argvlen[2] = 1;
+	argv[3] = key.c_str();				argvlen[3] = key.length();
+	argv[4] = time_str.c_str();			argvlen[4] = time_str.length();
+	argv[5] = window_ms_str.c_str();	argvlen[5] = window_ms_str.length();
+	argv[6] = max_str.c_str();			argvlen[6] = max_str.length();
+	argv[7] = unique_id_str.c_str();	argvlen[7] = unique_id_str.length();
 	// clang-format on
 
-	redisReply *reply = (redisReply *)redisCommandArgv(conn, 8, full_argv, full_argvlen);
+	redisReply *reply = (redisReply *)redisCommandArgv(conn, 8, argv, argvlen);
 
 	bool allowed = false;
-	if (reply && reply->type == REDIS_REPLY_INTEGER) {
-		allowed = (reply->integer == 1);
+	if (reply) {
+		if (reply->type == REDIS_REPLY_ARRAY && reply->elements >= 2) {
+			long long ok = reply->element[0]->integer;
+			long long cnt = reply->element[1]->integer;
+			allowed = (ok == 1);
+			LOG_INFO("[SlidingWindow] key=%s allowed=%lld count=%lld", key.c_str(), ok, cnt);
+		}
+		else if (reply->type == REDIS_REPLY_ERROR) {
+			LOG_ERROR("[SlidingWindow] Lua error: %s", reply->str);
+		}
+		else if (reply->type == REDIS_REPLY_NIL) {
+			LOG_ERROR("[SlidingWindow] Lua returned NIL (return 语句没执行到)");
+		}
+		else {
+			LOG_ERROR("[SlidingWindow] unexpected reply type=%d", reply->type);
+		}
+		freeReplyObject(reply);
 	}
-	else if (reply->type == REDIS_REPLY_INTEGER) {
-		LOG_ERROR("isAllowedBySlidingWindow Lua error: %s", reply->str);
+	else {
+		LOG_ERROR("[SlidingWindow] reply is nullptr");
 	}
-
-	if (reply) freeReplyObject(reply);
-
 	return allowed;
 }
 
