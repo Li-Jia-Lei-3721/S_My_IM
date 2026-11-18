@@ -15,6 +15,7 @@ using namespace std;
 #include <set>
 #include <sys/eventfd.h>
 #include <unordered_map>
+#include <unordered_set>
 
 // 用户空间
 struct ClientContext {
@@ -82,7 +83,12 @@ class EpollServer {
 	// 定时器部分
 	void addTimer(int fd, uint64_t);
 	void delTimer(uint64_t conn_id);
-
 	set<TimerNode> timer_set_;
 	unordered_map<uint64_t, set<TimerNode>::iterator> timer_map_;
+
+	// 房间部分
+	unordered_map<int, unordered_set<uint64_t>> room_online_users_; // 房间id->conn_id集合
+	int getUserIdByUsername(const string &username);
+	int createRoom(const string &room_name, int owner_id);
+	bool isRoomMember(int room_id, int user_id);
 };
