@@ -969,3 +969,178 @@ void EpollServer::delTimer(uint64_t conn_id) {
 		timer_map_.erase(it);
 	}
 }
+
+int EpollServer::getUserIdByUsername(const string &username) {
+	MYSQL *conn = nullptr;
+	MysqlConnRAII raii(&conn);
+
+	if (!conn) return -1;
+
+	char esc[256] = {0};
+	mysql_real_escape_string(conn, esc, username.c_str(), username.length());
+	string sql = "SELECT id FROM users WHERE username = '" + string(esc) + "'";
+
+	if (!mysql_query(conn, sql.c_str())) {
+		LOG_ERROR("getUserIdByUsername query failed: %s", mysql_error(conn));
+		return -1;
+	}
+
+	MYSQL_RES *res = mysql_store_result(conn);
+	if (!res) return -1;
+
+	int uid = -1;
+	MYSQL_ROW row = mysql_fetch_row(res);
+	if (row && row[0]) uid = atoi(row[0]);
+	mysql_free_result(res);
+
+	return uid;
+}
+
+int EpollServer::getRoomIdByName(const string &room_name) {
+	MYSQL *conn = nullptr;
+	MysqlConnRAII raii(&conn);
+	if (!conn) return -1;
+
+	char esc[256] = {0};
+	mysql_real_escape_string(conn, esc, room_name.c_str(), room_name.length());
+	string sql = "SELECT id FROM rooms WHERE room_name = '" + string(esc) + "'";
+
+	if (!mysql_query(conn, sql.c_str())) {
+		LOG_ERROR("getRoomIdByName query failed: %s", mysql_error(conn));
+		return -1;
+	}
+
+	MYSQL_RES *res = mysql_store_result(conn);
+	if (!res) return -1;
+
+	int rid = -1;
+	MYSQL_ROW row = mysql_fetch_row(res);
+	if (row && row[0]) rid = atoi(row[0]);
+	mysql_free_result(res);
+	return rid;
+}
+
+int EpollServer::createRoom(const string &room_name, int owner_id) {
+	MYSQL *conn = nullptr;
+	MysqlConnRAII raii(&conn);
+	if (!conn) return -1;
+
+	char esc[256] = {0};
+	mysql_real_escape_string(conn, esc, room_name.c_str(), room_name.length());
+	string sql1 = "INSERT INTO rooms (room_name,owner_id) VALUES ('" + string(esc) + "', " + to_string(owner_id) + ")";
+
+	if (mysql_query(conn, sql1.c_str()) != 0) {
+		if (mysql_errno(conn) == 1062) {
+			LOG_INFO("createRoom: room '%s' already exists", room_name.c_str());
+			return 0;
+		}
+		LOG_ERROR("createRoom failed: %s", mysql_error(conn));
+		return -1;
+	}
+
+	int room_id = (int)mysql_insert_id(conn);
+	// 房主加入成员表
+	string sql2 =
+		"INSERT INTO room_members (room_id,user_id) VALUES (" + to_string(room_id) + ", " + to_string(owner_id) + ")";
+
+	if (mysql_query(conn, sql2.c_str()) != 0) {
+		LOG_ERROR("createRoom: add owner member failed: %s", mysql_error(conn));
+		// 房间已建，成员没加成功——返回 id 但记错误，调用方决定
+	}
+
+	return room_id;
+}
+
+bool EpollServer::isRoomMember(int room_id, int user_id) {
+	MYSQL *conn = nullptr;
+	MysqlConnRAII raii(&conn);
+	if (!conn) return false;
+
+	string sql = "SELECT 1 FROM room_members WHERE room_id=" + to_string(room_id) +
+				 " AND user_id=" + to_string(user_id) + " LIMIT 1";
+	if (mysql_query(conn, sql.c_str()) != 0) return false;
+
+	MYSQL_RES *res = mysql_store_result(conn);
+	if (!res) return false;
+
+	bool member = (mysql_num_rows(res) > 0);
+	mysql_free_result(res);
+	return member;
+}
+
+bool EpollServer::addRoomMember(int room_id, int user_id) {
+	MYSQL *conn = nullptr;
+	MysqlConnRAII raii(&conn);
+	if (!conn) return false;
+
+	// ignore--c插入重复不报错 不回滚 返回0  继续往下走
+	string sql = "INSERT IGNORE INTO room_members (room_id, user_id) VALUES (" + to_string(room_id) + ", " +
+				 to_string(user_id) + ")";
+	if (mysql_query(conn, sql.c_str()) != 0) {
+		LOG_ERROR("addRoomMember failed: %s", mysql_error(conn));
+		return false;
+	}
+	return true;
+}
+
+bool EpollServer::removeRoomMember(int room_id, int user_id) {
+	MYSQL *conn = nullptr;
+	MysqlConnRAII raii(&conn);
+	if (!conn) return false;
+
+	string sql =
+		"DELETE FROM room_members WHERE room_id = " + to_string(room_id) + " AND user_id = " + to_string(user_id) + ")";
+
+	if (mysql_query(conn, sql.c_str()) != 0) {
+		LOG_ERROR("removeRoomMember failed: %s", mysql_error(conn));
+		return false;
+	}
+	return true;
+}
+
+void EpollServer::addRoomOnline(int room_id, uint64_t conn_id) {
+	room_online_users_[room_id].insert(conn_id);
+}
+
+void EpollServer::removeRoomOnline(int room_id, uint64_t conn_id) {
+	auto it = room_online_users_.find(room_id);
+	if (it == room_online_users_.end()) return;
+
+	it->second.erase(conn_id);
+	if (it->second.empty()) room_online_users_.erase(it);
+}
+
+unordered_set<uint64_t> EpollServer::getRoomOnlineUsers(int room_id) {
+	auto it = room_online_users_.find(room_id);
+	if (it == room_online_users_.end()) return {};
+
+	return it->second;
+}
+
+void EpollServer::removeUserFromAllRooms(uint64_t conn_id) {
+	for (auto &kv : room_online_users_) {
+		kv.second.erase(conn_id);
+	}
+}
+
+void EpollServer::testRoomLayer(const string &username) {
+	int uid = getUserIdByUsername(username);
+	LOG_INFO("[TEST] user=%s uid=%d", username.c_str(), uid);
+	if (uid < 0) return;
+
+	int rid = createRoom("test_room_001", uid);
+	LOG_INFO("[TEST] createRoom => %d", rid);
+
+	if (rid <= 0) {
+		rid = getRoomIdByName("test_room_001");
+		LOG_INFO("[TEST] fallback getRoomIdByName => %d", rid);
+	}
+	if (rid <= 0) return;
+
+	LOG_INFO("[TEST] isRoomMember(uid) => %d", (int)isRoomMember(rid, uid));
+	addRoomOnline(rid, 12345);
+	auto users = getRoomOnlineUsers(rid);
+	LOG_INFO("[TEST] room online size = %zu", users.size());
+	removeRoomOnline(rid, 12345);
+	LOG_INFO("[TEST] after remove, size = %zu", getRoomOnlineUsers(rid).size());
+}

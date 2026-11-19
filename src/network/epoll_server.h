@@ -51,6 +51,8 @@ class EpollServer {
 	bool start();
 	void run(atomic<bool> &running);
 
+	void testRoomLayer(const string &username);
+
   private:
 	void setNonBlocking(int fd);
 	void handleNewConnection();
@@ -86,9 +88,18 @@ class EpollServer {
 	set<TimerNode> timer_set_;
 	unordered_map<uint64_t, set<TimerNode>::iterator> timer_map_;
 
-	// 房间部分
-	unordered_map<int, unordered_set<uint64_t>> room_online_users_; // 房间id->conn_id集合
+	// MySQL 房间--用户归属
 	int getUserIdByUsername(const string &username);
-	int createRoom(const string &room_name, int owner_id);
+	int createRoom(const string &room_name, int owner_id); // 返回room_id  失败返回-1
+	int getRoomIdByName(const string &room_name);
 	bool isRoomMember(int room_id, int user_id);
+	bool addRoomMember(int room_id, int user_id);
+	bool removeRoomMember(int room_id, int user_id);
+
+	// 内存--上线与离线--房间在线成员(conn_id集合)
+	unordered_map<int, unordered_set<uint64_t>> room_online_users_; // 房间id->conn_id集合
+	void addRoomOnline(int room_id, uint64_t conn_id);
+	void removeRoomOnline(int room_id, uint64_t conn_id);
+	unordered_set<uint64_t> getRoomOnlineUsers(int room_id);
+	void removeUserFromAllRooms(uint64_t conn_id);
 };

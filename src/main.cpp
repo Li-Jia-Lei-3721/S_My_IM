@@ -53,6 +53,8 @@ int main() {
 		return 1;
 	}
 
+	server.testRoomLayer("test1");
+
 	server.run(g_running);
 
 	LOG_INFO("IM Server down...");
