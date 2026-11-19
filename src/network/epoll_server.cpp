@@ -980,8 +980,13 @@ int EpollServer::getUserIdByUsername(const string &username) {
 	mysql_real_escape_string(conn, esc, username.c_str(), username.length());
 	string sql = "SELECT id FROM users WHERE username = '" + string(esc) + "'";
 
-	if (!mysql_query(conn, sql.c_str())) {
-		LOG_ERROR("getUserIdByUsername query failed: %s", mysql_error(conn));
+	if (mysql_ping(conn) != 0) {
+		LOG_ERROR("mysql_ping failed before query: errno=%u err=%s", mysql_errno(conn), mysql_error(conn));
+	}
+
+	if (mysql_query(conn, sql.c_str()) != 0) {
+		LOG_ERROR("query failed: errno=%u err=%s sql=[%s] sql_len=%zu", mysql_errno(conn), mysql_error(conn),
+				  sql.c_str(), sql.size());
 		return -1;
 	}
 
@@ -1005,7 +1010,7 @@ int EpollServer::getRoomIdByName(const string &room_name) {
 	mysql_real_escape_string(conn, esc, room_name.c_str(), room_name.length());
 	string sql = "SELECT id FROM rooms WHERE room_name = '" + string(esc) + "'";
 
-	if (!mysql_query(conn, sql.c_str())) {
+	if (mysql_query(conn, sql.c_str()) != 0) {
 		LOG_ERROR("getRoomIdByName query failed: %s", mysql_error(conn));
 		return -1;
 	}
@@ -1089,7 +1094,7 @@ bool EpollServer::removeRoomMember(int room_id, int user_id) {
 	if (!conn) return false;
 
 	string sql =
-		"DELETE FROM room_members WHERE room_id = " + to_string(room_id) + " AND user_id = " + to_string(user_id) + ")";
+		"DELETE FROM room_members WHERE room_id = " + to_string(room_id) + " AND user_id = " + to_string(user_id);
 
 	if (mysql_query(conn, sql.c_str()) != 0) {
 		LOG_ERROR("removeRoomMember failed: %s", mysql_error(conn));
@@ -1121,26 +1126,4 @@ void EpollServer::removeUserFromAllRooms(uint64_t conn_id) {
 	for (auto &kv : room_online_users_) {
 		kv.second.erase(conn_id);
 	}
-}
-
-void EpollServer::testRoomLayer(const string &username) {
-	int uid = getUserIdByUsername(username);
-	LOG_INFO("[TEST] user=%s uid=%d", username.c_str(), uid);
-	if (uid < 0) return;
-
-	int rid = createRoom("test_room_001", uid);
-	LOG_INFO("[TEST] createRoom => %d", rid);
-
-	if (rid <= 0) {
-		rid = getRoomIdByName("test_room_001");
-		LOG_INFO("[TEST] fallback getRoomIdByName => %d", rid);
-	}
-	if (rid <= 0) return;
-
-	LOG_INFO("[TEST] isRoomMember(uid) => %d", (int)isRoomMember(rid, uid));
-	addRoomOnline(rid, 12345);
-	auto users = getRoomOnlineUsers(rid);
-	LOG_INFO("[TEST] room online size = %zu", users.size());
-	removeRoomOnline(rid, 12345);
-	LOG_INFO("[TEST] after remove, size = %zu", getRoomOnlineUsers(rid).size());
 }

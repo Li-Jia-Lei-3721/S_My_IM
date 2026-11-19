@@ -51,8 +51,6 @@ class EpollServer {
 	bool start();
 	void run(atomic<bool> &running);
 
-	void testRoomLayer(const string &username);
-
   private:
 	void setNonBlocking(int fd);
 	void handleNewConnection();
