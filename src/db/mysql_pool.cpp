@@ -25,6 +25,7 @@ MYSQL *MysqlPool::createConnection() {
 
 	if (mysql_set_character_set(conn, "utf8mb4") != 0) {
 		LOG_ERROR("Failed to set charset: %s", mysql_error(conn));
+		mysql_close(conn);
 		return nullptr;
 	}
 

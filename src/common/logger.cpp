@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdarg>
 // #include <iomanip>
+
 #include <iostream>
 #include <sstream>
 
@@ -29,6 +30,7 @@ Logger::~Logger() {
 	}
 
 	if (!buffers_[current_buffer_idx_].empty()) {
+		lock_guard<mutex> lock(mtx_);
 		ready_queue_.push(std::move(buffers_[current_buffer_idx_]));
 		buffers_[current_buffer_idx_].clear();
 	}

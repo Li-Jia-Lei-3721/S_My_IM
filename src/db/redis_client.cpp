@@ -262,7 +262,7 @@ void RedisClient::expire(const string &key, int seconds) {
 	RedisConnRAII raii(&conn);
 
 	if (!conn) return;
-	redisReply *reply = (redisReply *)redisCommand(conn, "EXPIRE %s %d", key.c_str());
+	redisReply *reply = (redisReply *)redisCommand(conn, "EXPIRE %s %d", key.c_str(), seconds);
 
 	if (reply) freeReplyObject(reply);
 }
@@ -300,7 +300,7 @@ void RedisClient::del(const string &key) {
 	if (!conn) return;
 	redisReply *reply = (redisReply *)redisCommand(conn, "DEL %s", key.c_str());
 
-	if (reply) freeReplyObject(conn);
+	if (reply) freeReplyObject(reply);
 }
 
 bool RedisClient::isAllowedBySlidingWindow(const string &key, int windowSeconds, int maxRequests) {

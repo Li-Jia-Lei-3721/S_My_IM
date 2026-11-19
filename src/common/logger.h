@@ -6,7 +6,6 @@
 #include <string>
 #include <thread>
 #include <vector>
-
 using namespace std;
 
 enum LogLevel {
