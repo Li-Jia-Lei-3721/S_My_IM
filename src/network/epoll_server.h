@@ -95,9 +95,17 @@ class EpollServer {
 	bool removeRoomMember(int room_id, int user_id);
 
 	// 内存--上线与离线--房间在线成员(conn_id集合)
+	mutable mutex room_mtx_;
 	unordered_map<int, unordered_set<uint64_t>> room_online_users_; // 房间id->conn_id集合
 	void addRoomOnline(int room_id, uint64_t conn_id);
 	void removeRoomOnline(int room_id, uint64_t conn_id);
 	unordered_set<uint64_t> getRoomOnlineUsers(int room_id);
 	void removeUserFromAllRooms(uint64_t conn_id);
+
+	// 房间任务
+	void processJoinRoomTask(int client_fd, uint64_t conn_id, const string &body);
+	void processRoomChatTask(int client_fd, uint64_t conn_id, const string &body);
+
+	// 查用户加入的所有房间(room_id,room_name)
+	vector<pair<int, string>> getRoomsByUserId(int user_id);
 };

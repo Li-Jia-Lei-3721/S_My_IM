@@ -47,9 +47,16 @@ void receive_thread() {
 				try {
 					json j = json::parse(body);
 					if (header.type == MSG_CHAT) {
-						string sender = j["sender"];
-						string msg = j["message"];
-						cout << "\n[" << sender << "]: " << msg << endl;
+						if (j.contains("room")) {
+							// 房间消息，显示 [roomname:username]message
+							cout << "\n[" << j["room"].get<string>() << ":" << j["sender"].get<string>() << "]"
+								 << j["message"].get<string>() << endl;
+						}
+						else {
+							string sender = j["sender"];
+							string msg = j["message"];
+							cout << "\n[" << sender << "]: " << msg << endl;
+						}
 					}
 					else if (header.type == MSG_SYSTEM) {
 						string msg = j["message"];
@@ -98,20 +105,32 @@ void chat_loop() {
 		}
 		if (input.empty()) continue;
 		json chat_json;
-		if (input[0] == '@') {
+
+		if (input.rfind("/join", 0) == 0) {
+			string room_name = input.substr(6);
+			if (room_name.empty()) continue;
+			chat_json["room_name"] = room_name;
+			send_packet(MSG_JOIN_ROOM, chat_json);
+		}
+		else if (input[0] == '#') {
+			size_t sp = input.find(' ');
+			if (sp == string::npos) continue;
+			chat_json["room_name"] = input.substr(1, sp - 1);
+			chat_json["message"] = input.substr(sp + 1);
+			send_packet(MSG_ROOM_CHAT, chat_json);
+		}
+		else if (input[0] == '@') {
 			size_t space_pos = input.find(' ');
 			if (space_pos != string::npos) {
 				chat_json["target"] = input.substr(1, space_pos - 1);
 				chat_json["message"] = input.substr(space_pos + 1);
-			}
-			else {
-				continue;
+				send_packet(MSG_CHAT, chat_json);
 			}
 		}
 		else {
 			chat_json["message"] = input;
+			send_packet(MSG_CHAT, chat_json);
 		}
-		send_packet(MSG_CHAT, chat_json);
 	}
 }
 
@@ -135,11 +154,13 @@ int main() {
 	recv_t.detach();
 
 	while (true) {
-		cout << "\n===== 菜单 =====\n"
-			 << "1. 注册\n"
-			 << "2. 登录\n"
-			 << "3. 退出\n"
-			 << "请选择: ";
+		cout << "1.注册 2.登录";
+		cout << "\n进入聊天模式。\n"
+			 << "  普通消息         = 群聊\n"
+			 << "  @用户名 消息     = 私聊\n"
+			 << "  /join 房间名     = 加入/创建房间\n"
+			 << "  #房间名 消息     = 在房间发消息\n"
+			 << "  exit             = 退出\n";
 		int choice;
 
 		if (!(cin >> choice)) {
@@ -207,7 +228,7 @@ int main() {
 			g_login_ok = false;
 
 			// 登录成功，进入聊天
-			cout << "\n进入聊天模式。普通消息=群聊，@用户名 消息=私聊，exit退出\n";
+			cout << "\n进入聊天模式。普通消息=群聊，@用户名 消息=私聊,exit退出\n";
 			chat_loop();
 		}
 	}

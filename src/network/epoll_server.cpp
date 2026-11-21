@@ -48,6 +48,9 @@ void EpollServer::closeConnection(int client_fd, uint64_t conn_id) {
 		}
 	}
 
+	// 清理内存中的  用户-房间 在线状态映射
+	removeUserFromAllRooms(conn_id);
+
 	epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_fd, nullptr);
 	close(client_fd);
 	clients_.erase(client_fd);
@@ -330,6 +333,16 @@ void EpollServer::handleClientData(int client_fd) {
 			// 按值捕获client_fd和body 防止垂悬引用
 			auth_thread_pool_->enqueue([this, client_fd, current_conn_id, body, type = (MsgType)header.type]() {
 				processAuthTask(client_fd, current_conn_id, body, type);
+			});
+		}
+		else if (header.type == MSG_JOIN_ROOM) {
+			auth_thread_pool_->enqueue([this, client_fd, current_conn_id, body]() {
+				processJoinRoomTask(client_fd, current_conn_id, body);
+			});
+		}
+		else if (header.type == MSG_ROOM_CHAT) {
+			thread_pool_->enqueue([this, client_fd, current_conn_id, body]() {
+				processRoomChatTask(client_fd, current_conn_id, body);
 			});
 		}
 		else if (header.type == MSG_CHAT) {
@@ -651,7 +664,7 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 			}
 		}
 		else if (type == MSG_LOGIN) {
-			string sql = "SELECT password,salt FROM users WHERE username='" + string(escape_uname) + "'";
+			string sql = "SELECT id,password,salt FROM users WHERE username='" + string(escape_uname) + "'";
 
 			if (mysql_query(conn, sql.c_str()) != 0) {
 				json res;
@@ -693,8 +706,9 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 			}
 
 			MYSQL_ROW row = mysql_fetch_row(result);
-			string db_hashed_pwd = row[0];
-			string db_salt = row[1];
+			int db_user_id = atoi(row[0]);
+			string db_hashed_pwd = row[1];
+			string db_salt = row[2];
 			string input_hashed = PasswordUtil::hashPassword(pwd, db_salt);
 
 			mysql_free_result(result); // 对比完立即释放结果集  防后续return导致内存泄漏
@@ -736,6 +750,12 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 			postToIoThread([this, client_fd, conn_id, success_body]() {
 				sendToClient(client_fd, conn_id, MSG_SYSTEM, success_body);
 			});
+
+			// 登录成功后 将用户上线状态记录到 内存的 所有其加入的房间中
+			auto rooms = getRoomsByUserId(db_user_id);
+			for (auto &p : rooms) {
+				addRoomOnline(p.first, conn_id);
+			}
 
 			vector<string> offline_msgs;
 
@@ -1104,10 +1124,13 @@ bool EpollServer::removeRoomMember(int room_id, int user_id) {
 }
 
 void EpollServer::addRoomOnline(int room_id, uint64_t conn_id) {
+	lock_guard<mutex> lock(room_mtx_);
 	room_online_users_[room_id].insert(conn_id);
 }
 
 void EpollServer::removeRoomOnline(int room_id, uint64_t conn_id) {
+	lock_guard<mutex> lock(room_mtx_);
+
 	auto it = room_online_users_.find(room_id);
 	if (it == room_online_users_.end()) return;
 
@@ -1116,6 +1139,8 @@ void EpollServer::removeRoomOnline(int room_id, uint64_t conn_id) {
 }
 
 unordered_set<uint64_t> EpollServer::getRoomOnlineUsers(int room_id) {
+	lock_guard<mutex> lock(room_mtx_);
+
 	auto it = room_online_users_.find(room_id);
 	if (it == room_online_users_.end()) return {};
 
@@ -1123,7 +1148,163 @@ unordered_set<uint64_t> EpollServer::getRoomOnlineUsers(int room_id) {
 }
 
 void EpollServer::removeUserFromAllRooms(uint64_t conn_id) {
+	lock_guard<mutex> lock(room_mtx_);
+
 	for (auto &kv : room_online_users_) {
 		kv.second.erase(conn_id);
+	}
+}
+
+vector<pair<int, string>> EpollServer::getRoomsByUserId(int user_id) {
+	vector<pair<int, string>> result;
+	MYSQL *conn = nullptr;
+	MysqlConnRAII raii(&conn);
+	if (!conn) return result;
+
+	string sql = "SELECT r.id,r.room_name FROM rooms r  "
+				 "JOIN room_members rm ON r.id = rm.room_id "
+				 "WHERE rm.user_id = " +
+				 to_string(user_id);
+
+	if (mysql_query(conn, sql.c_str()) != 0) {
+		LOG_ERROR("getRoomsByUserId failed: %s", mysql_error(conn));
+		return result;
+	}
+
+	MYSQL_RES *res = mysql_store_result(conn);
+	if (!res) return result;
+
+	MYSQL_ROW row;
+	while ((row = mysql_fetch_row(res))) {
+		int rid = atoi(row[0]);
+		string rname = row[1] ? row[1] : "";
+		result.emplace_back(rid, rname);
+	}
+	mysql_free_result(res);
+	return result;
+}
+
+void EpollServer::processJoinRoomTask(int client_fd, uint64_t conn_id, const string &body) {
+	auto reply = [this, client_fd, conn_id](const string &msg) {
+		json res;
+		res["message"] = msg;
+		string b = res.dump();
+		postToIoThread([this, client_fd, conn_id, b]() {
+			sendToClient(client_fd, conn_id, MSG_SYSTEM, b);
+		});
+	};
+
+	try {
+		json j = json::parse(body);
+		string room_name = j.contains("room_name") ? j["room_name"].get<string>() : "";
+
+		//	1.必需登录
+		string username = SessionManager::getInstance().getUsernameByConnId(conn_id);
+		if (username.empty()) {
+			reply("会话失效 请重新登录");
+			return;
+		}
+
+		// 2.房间名校验
+		if (room_name.empty() || room_name.length() > 50) {
+			reply("房间名非法(1-50字符)");
+			return;
+		}
+
+		// 3. 拿user_id
+		int user_id = getUserIdByUsername(username);
+		if (user_id < 0) {
+			reply("用户不存在");
+			return;
+		}
+
+		// 4.拿room_id
+		int room_id = getRoomIdByName(room_name);
+		if (room_id < 0) {
+			room_id = createRoom(room_name, user_id);
+			// 并发下可能刚被创建
+			if (room_id <= 0) {
+				room_id = getRoomIdByName(room_name);
+			}
+
+			if (room_id <= 0) {
+				reply("创建房间失败");
+				return;
+			}
+		}
+
+		// 5.不是房间成员就加入房间
+		if (!isRoomMember(room_id, user_id)) {
+			if (!addRoomMember(room_id, user_id)) {
+				reply("加入房间失败");
+				return;
+			}
+		}
+
+		// 6.内存在线登记
+		addRoomOnline(room_id, conn_id);
+
+		reply("加入房间 [" + room_name + "] 成功");
+	}
+	catch (const exception &e) {
+		reply("数据格式错误");
+	}
+}
+
+void EpollServer::processRoomChatTask(int client_fd, uint64_t conn_id, const string &body) {
+	auto reply = [this, client_fd, conn_id](const string &msg) {
+		json res;
+		res["message"] = msg;
+		string b = res.dump();
+		postToIoThread([this, client_fd, conn_id, b]() {
+			sendToClient(client_fd, conn_id, MSG_SYSTEM, b);
+		});
+	};
+
+	try {
+		json j = json::parse(body);
+		string room_name = j.contains("room_name") ? j["room_name"].get<string>() : "";
+		string input_msg = j.contains("message") ? j["message"].get<string>() : "";
+
+		if (room_name.empty() || input_msg.empty()) {
+			reply("房间名或消息不能为空");
+			return;
+		}
+
+		// 1.必须登录
+		string username = SessionManager::getInstance().getUsernameByConnId(conn_id);
+		if (username.empty()) {
+			reply("会话失效 请重新登录");
+			return;
+		}
+
+		// 2.校验成员
+		int user_id = getUserIdByUsername(username);
+		int room_id = getRoomIdByName(room_name);
+		if (room_id < 0 || !isRoomMember(room_id, user_id)) {
+			reply("你不在该房间或房间不存在");
+			return;
+		}
+
+		// 3.组装json包
+		json out_json;
+		out_json["room"] = room_name;
+		out_json["sender"] = username;
+		out_json["message"] = input_msg;
+		string out_body = out_json.dump();
+
+		// 4. 拿房间在线成员快照，投回主线程广播
+		auto online = getRoomOnlineUsers(room_id);
+		postToIoThread([this, online, out_body]() {
+			for (uint64_t cid : online) {
+				int fd = SessionManager::getInstance().getFdByConnId(cid);
+				if (fd < 0) continue;
+				// 需求 3：发送失败直接丢，不重试
+				sendToClient(fd, cid, MSG_CHAT, out_body);
+			}
+		});
+	}
+	catch (const exception &e) {
+		reply("数据格式错误");
 	}
 }
