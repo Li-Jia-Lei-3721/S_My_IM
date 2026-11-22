@@ -35,13 +35,13 @@ class SessionManager {
 
 	struct UserShard { // user相关:按username hash分片
 		mutex mtx;
-		unordered_map<string, uint64_t> user_to_conn;
+		unordered_map<string, uint64_t> user_to_conn_; // username->conn_id
 	};
 
 	struct ConnShard { // conn_id相关 两个map共用一把锁  都说按conn_id查
 		mutex mtx;
-		unordered_map<uint64_t, string> conn_to_user;
-		unordered_map<uint64_t, int> conn_to_id;
+		unordered_map<uint64_t, string> conn_to_user_; // conn_id->username
+		unordered_map<uint64_t, int> conn_to_fd_;	   // conn_id->fd
 	};
 
 	array<UserShard, SHARD_COUNT> user_shards_;
