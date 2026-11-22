@@ -1,7 +1,6 @@
 {
 	"server":{
-		"port": 8080,
-		"thread_pool_size": 10
+		"port": 8080
 	},
 	"mysql": {
 		"host": "127.0.0.1",
@@ -9,12 +8,12 @@
 		"password": "Root@123456",
 		"dbname": "im_db",
 		"port": 3306,
-		"pool_size": 10
+		"pool_size": 20
 	},
 	"redis": {
 		"host": "127.0.0.1",
 		"port": 6379,
-		"pool_size": 10
+		"pool_size": 20
 	},
 	"log": {
 		"path": "../logs/server.log",

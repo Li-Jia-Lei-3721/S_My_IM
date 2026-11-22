@@ -38,6 +38,13 @@ class MysqlConnRAII {
 	MysqlConnRAII(MYSQL **conn);
 	~MysqlConnRAII();
 
+	void release() {
+		if (conn_) {
+			MysqlPool::getInstance().releaseConnection(conn_);
+			conn_ = nullptr;
+		}
+	}
+
   private:
 	MYSQL *conn_;
 };

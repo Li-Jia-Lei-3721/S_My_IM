@@ -17,6 +17,9 @@ PointerAlignment: Right
 AllowShortEnumsOnASingleLine: false
 
 AllowShortLambdasOnASingleLine: None
+
 LambdaBodyIndentation: OuterScope
 
 AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+
+#AllowShortFunctionsOnASingleLine: Inline

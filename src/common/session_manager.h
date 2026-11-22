@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -29,6 +30,30 @@ class SessionManager {
   private:
 	SessionManager() = default;
 	mutex mtx_;
+
+	static constexpr size_t SHARD_COUNT = 16; // 分片数 2的幂次方 方便%优化为位运算
+
+	struct UserShard { // user相关:按username hash分片
+		mutex mtx;
+		unordered_map<string, uint64_t> user_to_conn;
+	};
+
+	struct ConnShard { // conn_id相关 两个map共用一把锁  都说按conn_id查
+		mutex mtx;
+		unordered_map<uint64_t, string> conn_to_user;
+		unordered_map<uint64_t, int> conn_to_id;
+	};
+
+	array<UserShard, SHARD_COUNT> user_shards_;
+	array<ConnShard, SHARD_COUNT> conn_shards_;
+
+	UserShard &userShard(const string &u) {
+		return user_shards_[hash<string>{}(u) % SHARD_COUNT];
+	}
+
+	ConnShard &connShard(uint64_t conn_id) {
+		return conn_shards_[conn_id % SHARD_COUNT];
+	}
 
 	// 映射表
 	unordered_map<string, uint64_t> user_to_conn_; // username->conn_id

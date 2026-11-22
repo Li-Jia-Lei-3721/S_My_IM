@@ -21,6 +21,7 @@ add_executable(im_server
 				src/common/logger.cpp
 				src/common/validator.cpp
 				src/common/config_manager.cpp 
+				src/network/sub_reactor.cpp
 )
 
 target_link_libraries(im_server 
@@ -44,5 +45,6 @@ configure_file(
     COPYONLY
 )
 
-
+# 压测客户端
+add_executable(bench_client bench/bench_client.cpp)
 
