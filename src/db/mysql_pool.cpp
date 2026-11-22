@@ -37,7 +37,7 @@ void MysqlPool::init(const string &host, const string &user, const string &pwd, 
 	// clang-format off
 	host_ = host;	user_ = user;	pwd_ = pwd;
 	db_ = db;		port_ = port;	// 记录配置
-	//clang-format on
+	// clang-format on
 
 	for (int i = 0; i < poolSize; i++) {
 		MYSQL *conn = createConnection();
@@ -66,10 +66,20 @@ MYSQL *MysqlPool::getConnection() {
 	MYSQL *conn = pool_.front();
 	pool_.pop();
 
-	if (mysql_ping(conn) != 0) {
-		LOG_WARN("MySQL connetion lost, reconnecting...");
+	if (mysql_ping(conn) != 0) { // 连接毁了 原地复活
 		mysql_close(conn);
 		conn = createConnection();
+
+		if (conn) {
+			pool_.front() = conn;
+		}
+		else {
+			pool_.pop();
+			return nullptr;
+		}
+	}
+	else {
+		pool_.pop();
 	}
 
 	return conn;

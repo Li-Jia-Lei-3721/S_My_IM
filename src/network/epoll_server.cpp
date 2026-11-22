@@ -186,25 +186,6 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 			return;
 		}
 
-		MYSQL *conn = nullptr;
-		MysqlConnRAII raii(&conn);
-
-		if (!conn) {
-			json res;
-			res["message"] = "数据库系统繁忙 请稍后再试";
-			string body = res.dump();
-
-			postToIoThread(conn_id, [this, client_fd, conn_id, body]() {
-				sendToClient(client_fd, conn_id, MSG_SYSTEM, body);
-			});
-			return;
-		}
-
-		char escape_uname[256] = {0};
-		// char escape_pwd[256] = {0};
-		mysql_real_escape_string(conn, escape_uname, uname.c_str(), uname.length());
-		// mysql_real_escape_string(conn, escape_pwd, pwd.c_str(), pwd.length());
-
 		if (type == MSG_GET_CODE) {
 			string limit_key = "limit:code:" + uname;
 
@@ -212,7 +193,7 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 			if (req_count == 1) RedisClient::getInstance().expire(limit_key, 60);
 			if (req_count > 1) {
 				json res;
-				res["message"] = "请求验证码过于频繁，请60秒后再试";
+				res["message"] = "请求验证码过于频繁,请60秒后再试";
 				postToIoThread(conn_id, [this, client_fd, conn_id, res_body = res.dump()]() {
 					sendToClient(client_fd, conn_id, MSG_SYSTEM, res_body);
 				});
@@ -275,6 +256,26 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 			// 2.计算哈希密文
 			string hashed_pwd = PasswordUtil::hashPassword(pwd, salt);
 
+			// 放到盐计算完后面
+			MYSQL *conn = nullptr;
+			MysqlConnRAII raii(&conn);
+
+			if (!conn) {
+				json res;
+				res["message"] = "数据库系统繁忙 请稍后再试";
+				string body = res.dump();
+
+				postToIoThread(conn_id, [this, client_fd, conn_id, body]() {
+					sendToClient(client_fd, conn_id, MSG_SYSTEM, body);
+				});
+				return;
+			}
+
+			char escape_uname[256] = {0};
+			// char escape_pwd[256] = {0};
+			mysql_real_escape_string(conn, escape_uname, uname.c_str(), uname.length());
+			// mysql_real_escape_string(conn, escape_pwd, pwd.c_str(), pwd.length());
+
 			string sql = "INSERT INTO users (username,password,salt) VALUES ('" + string(escape_uname) + "','" +
 						 hashed_pwd + "','" + salt + "')";
 
@@ -310,6 +311,25 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 			}
 		}
 		else if (type == MSG_LOGIN) {
+			MYSQL *conn = nullptr;
+			MysqlConnRAII raii(&conn);
+
+			if (!conn) {
+				json res;
+				res["message"] = "数据库系统繁忙 请稍后再试";
+				string body = res.dump();
+
+				postToIoThread(conn_id, [this, client_fd, conn_id, body]() {
+					sendToClient(client_fd, conn_id, MSG_SYSTEM, body);
+				});
+				return;
+			}
+
+			char escape_uname[256] = {0};
+			// char escape_pwd[256] = {0};
+			mysql_real_escape_string(conn, escape_uname, uname.c_str(), uname.length());
+			// mysql_real_escape_string(conn, escape_pwd, pwd.c_str(), pwd.length());
+
 			string sql = "SELECT id,password,salt FROM users WHERE username='" + string(escape_uname) + "'";
 
 			if (mysql_query(conn, sql.c_str()) != 0) {
