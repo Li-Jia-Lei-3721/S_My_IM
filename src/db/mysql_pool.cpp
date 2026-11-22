@@ -54,32 +54,31 @@ void MysqlPool::init(const string &host, const string &user, const string &pwd, 
 }
 
 MYSQL *MysqlPool::getConnection() {
-	unique_lock<mutex> lock(mtx_);
+	MYSQL *conn = nullptr;
 
-	if (!cv_.wait_for(lock, chrono::seconds(3), [this]() {
-		return !pool_.empty();
-	})) {
-		LOG_ERROR("Get MySQL connection timeout!");
-		return nullptr;
+	{
+		unique_lock<mutex> lock(mtx_);
+
+		if (!cv_.wait_for(lock, chrono::seconds(3), [this]() {
+			return !pool_.empty();
+		})) {
+			LOG_ERROR("Get MySQL connection timeout!");
+			return nullptr;
+		}
+
+		conn = pool_.front();
+		pool_.pop();
 	}
 
-	MYSQL *conn = pool_.front();
-	pool_.pop();
-
 	if (mysql_ping(conn) != 0) { // 连接毁了 原地复活
+		LOG_WARN("MySQL connection lost, reconnecting...");
 		mysql_close(conn);
 		conn = createConnection();
 
-		if (conn) {
-			pool_.front() = conn;
-		}
-		else {
-			pool_.pop();
+		if (!conn) {
+			LOG_ERROR("MySQL reconnect failed");
 			return nullptr;
 		}
-	}
-	else {
-		pool_.pop();
 	}
 
 	return conn;

@@ -326,9 +326,7 @@ void EpollServer::processAuthTask(int client_fd, uint64_t conn_id, const string 
 			}
 
 			char escape_uname[256] = {0};
-			// char escape_pwd[256] = {0};
 			mysql_real_escape_string(conn, escape_uname, uname.c_str(), uname.length());
-			// mysql_real_escape_string(conn, escape_pwd, pwd.c_str(), pwd.length());
 
 			string sql = "SELECT id,password,salt FROM users WHERE username='" + string(escape_uname) + "'";
 
