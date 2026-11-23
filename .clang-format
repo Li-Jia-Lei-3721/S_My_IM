@@ -21,5 +21,3 @@ AllowShortLambdasOnASingleLine: None
 LambdaBodyIndentation: OuterScope
 
 AllowShortIfStatementsOnASingleLine: AllIfsAndElse
-
-#AllowShortFunctionsOnASingleLine: Inline

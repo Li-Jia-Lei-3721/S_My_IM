@@ -64,7 +64,7 @@ bool EpollServer::start() {
 		});
 
 		sr->setCloseCallback([this](int client_fd, uint64_t conn_id) {
-			onConnectionClosed(client_fd, conn_id);
+			this->onConnectionClosed(client_fd, conn_id);
 		});
 
 		sr->start();
